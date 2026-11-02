@@ -30,6 +30,9 @@ All scripts are in the `scripts/` folder and run through Bruce's built-in **MQjs
 | 18 | `channel_analyzer.js` | WiFi | Find best WiFi channels | 30 sec |
 | 19 | `social_engineering_generator.js` | Analysis | Analyze fake network tactics | Instant |
 | 20 | `status_report.js` | Info | Show device capabilities | Instant |
+| 21 | `motion_radar.js` | Radar | WiFi-based motion detection | 60 sec |
+| 22 | `enhanced_motion_radar.js` | Radar | Multi-band motion (WiFi+RF+BLE) | 90 sec |
+| 23 | `kaiju_flasher.js` | Utility | Build & flash firmware | ~5 min |
 
 ---
 
@@ -677,6 +680,200 @@ findStrongest();
 ## Legal Reminder
 
 All of these scripts are **legal to use on networks and devices you own or have explicit written permission to test**. Unauthorized attacks are illegal in most jurisdictions. Use responsibly. 🌊
+
+---
+
+---
+
+## 21_motion_radar.js
+**Category:** Motion Detection Radar  
+**Purpose:** Detect movement through walls via WiFi signal variation
+
+```javascript
+// Monitors WiFi signal strength (RSSI) for motion
+// How it works: People moving cause signal reflections to change
+// Works through walls - signals bounce differently when obstacles move
+// Duration: 60 seconds continuous scan
+```
+
+**Output Example:**
+```
+=== MOTION RADAR ===
+Scanning for movement via WiFi signal variation...
+Threshold: 5 dBm
+
+[MOTION] 7.3 dBm change detected!
+[MOTION] 8.1 dBm change detected!
+[MOTION] 6.9 dBm change detected!
+
+Results:
+WiFi-Based Motion Radar
+Duration: 60 seconds
+Motion events: 23
+Average intensity: 7.2 dBm
+Proximity estimate: CLOSE
+Baseline RSSI: -52 dBm
+```
+
+**Proximity Estimates:**
+- **VERY CLOSE** (>20 dBm variation) = < 1 meter, direct line of sight
+- **CLOSE** (10-20 dBm) = 1-3 meters, same room
+- **NEARBY** (5-10 dBm) = 3-5 meters, adjacent room
+- **DISTANT** (2-5 dBm) = 5+ meters, through walls
+- **VERY DISTANT** (<2 dBm) = No clear motion
+
+**Use Case:**
+- Detect movement in adjacent rooms (through walls)
+- Identify if someone is home
+- Motion-triggered alerts
+- Passive surveillance (authorized only)
+- Ghost hunting (for fun)
+
+**How It Works:**
+1. Monitors WiFi signal strength from nearby router
+2. Movement causes multipath reflections to change
+3. RSSI variations indicate motion
+4. No special hardware needed — uses WiFi already present
+
+---
+
+## 22_enhanced_motion_radar.js
+**Category:** Advanced Motion Detection  
+**Purpose:** Multi-band motion detection (WiFi + RF + BLE)
+
+```javascript
+// Uses THREE frequency bands simultaneously:
+// - WiFi (2.4 GHz)
+// - RF 433 MHz (Hydra CC1101)
+// - BLE (2.4 GHz, separate from WiFi)
+// More accurate through walls, higher confidence
+```
+
+**Output Example:**
+```
+=== ENHANCED MOTION RADAR (Multi-Band) ===
+WiFi (2.4 GHz) + RF (433 MHz) + BLE Scanning...
+
+[WiFi] Motion at 2.3s: 6.2 dBm
+[RF 433] Motion at 2.5s: 7.1 dBm
+[BLE] Motion at 2.7s: 5.8 dBm
+[WiFi] Motion at 5.1s: 8.3 dBm
+
+Results:
+Enhanced Multi-Band Motion Radar
+Duration: 90 seconds
+Detection confidence: HIGH
+Proximity estimate: CLOSE (1-3 meters)
+
+Motion events:
+  WiFi 2.4 GHz: 28 events
+  RF 433 MHz: 15 events
+  BLE 2.4 GHz: 12 events
+  Total: 55 events
+
+Intensity averages:
+  WiFi: 6.8 dBm
+  RF: 7.1 dBm
+  BLE: 6.2 dBm
+  Overall: 6.7 dBm
+```
+
+**Confidence Levels:**
+- **HIGH** (>20 events) = Definite motion
+- **MEDIUM** (10-20 events) = Probable motion
+- **MEDIUM-LOW** (5-10 events) = Weak/distant motion
+- **LOW** (<5 events) = No clear motion
+
+**Use Case:**
+- More accurate motion detection (3 bands = higher confidence)
+- Better through-wall detection
+- Distinguish motion from noise
+- Proximity estimation (close/far/distant)
+- Hydra RF 424 required for best results
+
+**Advantage over Standard Radar:**
+- Uses multiple frequency bands for cross-confirmation
+- RF 433 MHz penetrates walls differently than WiFi
+- BLE as independent 2.4 GHz source
+- More reliable motion detection
+
+---
+
+## 23_kaiju_flasher.js
+**Category:** Utility / Firmware Management  
+**Purpose:** One-button build and flash Kaiju firmware
+
+```javascript
+// Automated firmware build and flash sequence
+// Requires: platformio, USB connection to device
+// Handles all steps automatically
+```
+
+**Output Example:**
+```
+╔════════════════════════════════════════╗
+║     KAIJU FIRMWARE FLASHER            ║
+║     Cappy's Play Edition              ║
+╚════════════════════════════════════════╝
+
+[1/5] Pre-flight checks...
+      Checking requirements
+
+[2/5] Building Kaiju firmware...
+      Running: platformio run -e m5stack-cardputer
+  Linking environment m5stack-cardputer
+  Compiling src/main.cpp
+  Compiling src/core/theme.h
+  ✓ Build successful!
+
+[3/5] Detecting Cardputer ADV...
+  ✓ Device found!
+  USB Port: /dev/ttyUSB0
+  Board: m5stack-cardputer
+  Chip: ESP32-S3
+
+[4/5] Flashing Kaiju to device...
+  Writing firmware.bin (0x0)...
+  50% complete...
+  100% complete!
+  ✓ Verification successful!
+
+[5/5] Rebooting device...
+  Hard resetting via RTS pin...
+  ✓ Device rebooting
+
+╔════════════════════════════════════════╗
+║        FLASH SUCCESSFUL! 🎉           ║
+╚════════════════════════════════════════╝
+
+Device is now running Kaiju firmware!
+Splash screen: Kaiju / Cappy's Play
+Theme: 70s Nautical Orange
+```
+
+**What It Does:**
+1. **Pre-flight checks** — Verifies platformio & USB device
+2. **Build** — Compiles firmware (2-5 min)
+3. **Device detection** — Finds connected Cardputer ADV
+4. **Flash** — Writes binary to device
+5. **Reboot** — Restarts with new firmware
+
+**Use Case:**
+- One-button flash from Kaiju itself
+- No command line needed
+- Ideal for updating firmware on the device
+- Perfect for testing modified builds
+
+**Requirements:**
+- platformio installed: `pip install platformio`
+- USB cable connected (data-capable, not charge-only)
+- Cardputer ADV powered on
+- ~5 minutes
+
+**Common Issues:**
+- "Device not found" → Check USB cable, try different port
+- "Build fails" → Check platformio installation
+- "Permission denied" → May need `sudo` on Linux/Mac
 
 ---
 
