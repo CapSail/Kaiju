@@ -4,7 +4,6 @@
 
 function kaijuFlasher() {
     var flash_log = [];
-    var start_time = system.millis();
 
     console.log("╔════════════════════════════════════════╗");
     console.log("║     KAIJU FIRMWARE FLASHER            ║");
@@ -112,12 +111,11 @@ function kaijuFlasher() {
     });
 
     console.log("  Hard resetting via RTS pin...");
-    system.delay(2000); // Simulate reboot
+    delay(2000); // Simulate reboot
     console.log("  ✓ Device rebooting");
     console.log("");
 
     // Success summary
-    var elapsed = (system.millis() - start_time) / 1000;
 
     console.log("╔════════════════════════════════════════╗");
     console.log("║        FLASH SUCCESSFUL! 🎉           ║");
@@ -135,7 +133,6 @@ function kaijuFlasher() {
     console.log("  4. Set frequency to 433.05 MHz (Hydra RF 424)");
     console.log("  5. Load scripts from Files → scripts/");
     console.log("");
-    console.log("Total time: " + elapsed.toFixed(1) + " seconds");
     console.log("");
 
     return {

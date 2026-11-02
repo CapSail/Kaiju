@@ -39,8 +39,7 @@ function statusReport() {
         available_scripts: 20,
         party_trick_readiness: "Maximum",
         red_team_readiness: "Full spectrum",
-        current_status: "Online and ready",
-        timestamp: system.millis()
+        current_status: "Online and ready"
     };
 }
 
