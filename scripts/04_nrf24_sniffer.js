@@ -9,8 +9,8 @@ function nrf24Sniffer() {
     for (var i = 0; i < channels.length; i++) {
         var channel = channels[i];
 
-        // nrf24.sniff(channel, duration)
-        var result = nrf24.sniff(channel, scan_duration);
+        // // nrf24.sniff(channel, duration)
+        var result = // nrf24.sniff(channel, scan_duration);
 
         if (result && result.packets) {
             for (var j = 0; j < result.packets.length; j++) {

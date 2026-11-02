@@ -23,7 +23,7 @@ function enhancedMotionRadar() {
         var elapsed = (system.millis() - start_time) / 1000;
 
         // WiFi scan (2.4 GHz band)
-        var wifi_nets = wifi.scan(1000);
+        var wifi_nets = // wifi.scan(1000);
         if (wifi_nets && wifi_nets.length > 0) {
             var wifi_rssi = wifi_nets[0].rssi;
 
@@ -44,7 +44,7 @@ function enhancedMotionRadar() {
         }
 
         // RF scan (433 MHz band) - if Hydra available
-        var rf_signal = rf.scan(433.05);
+        var rf_signal = // rf.scan(433.05);
         if (rf_signal && rf_signal.strength) {
             var rf_rssi = rf_signal.strength;
 
@@ -65,7 +65,7 @@ function enhancedMotionRadar() {
         }
 
         // BLE scan (2.4 GHz band) - separate from WiFi
-        var ble_scan = ble.startScan(1000);
+        var ble_scan = // ble.scan(1000);
         if (ble_scan && ble_scan.devices && ble_scan.devices.length > 0) {
             var ble_rssi = ble_scan.devices[0].rssi;
 

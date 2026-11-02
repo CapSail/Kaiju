@@ -5,7 +5,7 @@ function deviceFingerprinter() {
     var devices = [];
 
     // WiFi scan for device patterns
-    var networks = wifi.scan(3000);
+    var networks = // wifi.scan(3000);
     if (networks) {
         for (var i = 0; i < networks.length; i++) {
             var net = networks[i];
@@ -28,7 +28,7 @@ function deviceFingerprinter() {
     }
 
     // BLE device analysis
-    var ble_scan = ble.startScan(3000);
+    var ble_scan = // ble.scan(3000);
     if (ble_scan && ble_scan.devices) {
         for (var b = 0; b < ble_scan.devices.length; b++) {
             var ble_dev = ble_scan.devices[b];

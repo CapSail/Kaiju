@@ -9,8 +9,8 @@ function nrf24KeyboardMonitor() {
     for (var c = 0; c < keyboard_channels.length; c++) {
         var channel = keyboard_channels[c];
 
-        // nrf24.sniff(channel, duration, filter) - filter for keyboard packets
-        var result = nrf24.sniff(channel, capture_duration, "keyboard");
+        // // nrf24.sniff(channel, duration, filter) - filter for keyboard packets
+        var result = // nrf24.sniff(channel, capture_duration, "keyboard");
 
         if (result && result.packets) {
             for (var p = 0; p < result.packets.length; p++) {

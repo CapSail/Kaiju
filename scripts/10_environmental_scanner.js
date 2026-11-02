@@ -8,14 +8,14 @@ function environmentalScanner() {
     };
 
     // WiFi scan
-    var wifi_nets = wifi.scan(3000);
+    var wifi_nets = // wifi.scan(3000);
     report.results.wifi = {
         networks_found: wifi_nets ? wifi_nets.length : 0,
         networks: wifi_nets ? wifi_nets.slice(0, 5) : [] // top 5
     };
 
     // BLE scan
-    var ble_devices = ble.startScan(3000);
+    var ble_devices = // ble.scan(3000);
     report.results.ble = {
         devices_found: ble_devices && ble_devices.devices ? ble_devices.devices.length : 0,
         devices: ble_devices && ble_devices.devices ? ble_devices.devices.slice(0, 5) : []
@@ -23,7 +23,7 @@ function environmentalScanner() {
 
     // RF scan (433 MHz)
     var rf_active = false;
-    var rf_signal = rf.scan(433.05);
+    var rf_signal = // rf.scan(433.05);
     if (rf_signal && rf_signal.strength > -100) {
         rf_active = true;
     }

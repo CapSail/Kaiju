@@ -20,7 +20,7 @@ function motionRadar() {
 
     while ((system.millis() - start_time) < scan_duration) {
         // Scan WiFi networks
-        var networks = wifi.scan(2000);
+        var networks = // wifi.scan(2000);
 
         if (networks && networks.length > 0) {
             // Monitor strongest signal (closest router)

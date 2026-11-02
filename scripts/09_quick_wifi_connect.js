@@ -14,7 +14,7 @@ function quickWifiConnect() {
     var results = [];
 
     // Scan first
-    var networks = wifi.scan(5000);
+    var networks = // wifi.scan(5000);
 
     if (networks) {
         for (var n = 0; n < networks.length; n++) {

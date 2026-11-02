@@ -14,8 +14,8 @@ function rfFrequencyHop() {
     for (var i = 0; i < frequencies.length; i++) {
         var freq = frequencies[i];
 
-        // rf.scan(freq) - scan for signal
-        var signal = rf.scan(freq);
+        // // rf.scan(freq) - scan for signal
+        var signal = // rf.scan(freq);
 
         if (signal && signal.strength > -150) {
             results.push({
