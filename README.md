@@ -1,53 +1,133 @@
-![Bruce Main Menu](./media/pictures/bruce_banner.jpg)
+# 🦑 KAIJU — Cappy's Cap
 
-# :shark: Bruce
+**A personalized 70's nautical-themed RF/WiFi hacking firmware for the M5Stack Cardputer ADV with Hydra RF 424**
 
-Bruce is a versatile ESP32 firmware packed with offensive-security tools, built to make Red Team operations fast and portable.
+Build your own pentesting companion. Scan networks, hijack wireless devices, throw party tricks, and mess with your friends' WiFi — all from a device that fits in your pocket.
 
-It also supports [M5Stack](https://shop.m5stack.com), [LILYGO](https://lilygo.cc) , [RockBase IoT](https://www.rockbaseiot.com) and [Elecrow](https://www.elecrow.com) products, and works great with the Cardputer, Sticks, M5Cores, T-Decks and T-Embeds.
+---
 
-## :zap: Get Our Official DevKit!
+## 🌊 What is Kaiju?
 
-# RF REAPER
+Kaiju is a custom **Bruce firmware build** personalized for Cap Sails with:
 
-**RF REAPER** is our custom PCB devkit, purpose-built for Bruce!
+- **70's Nautical Aesthetic**: Burnt orange, sand, and gold color scheme with a groovy anchor-themed splash screen
+- **Hydra RF 424 Optimized**: Full support for CC1101 (433 MHz) + nRF24 (2.4 GHz) dual-band radio attacks
+- **20 Built-in Attack Scripts**: JavaScript apps for WiFi spam, BLE hijacking, RF sniffing, and environmental scanning
+- **Simplified Menu**: Streamlined for real hacking — WiFi, BLE, RF, NRF24, IR, RFID, Files, Settings
+- **Party Trick Ready**: Deauth networks, confuse Bluetooth devices, jam signals, and impress your friends
 
-Every major feature works natively, right out of the box. Sub-GHz, NFC/RFID, IR, 2.4GHz(NRF), GPS-ready, and a microSD, all driven by a beefy ESP32-S3 (16MB Flash / 8MB PSRAM). Tons of GPIOs via the AW9523 expander plus Flipper Zero & iButton header compatibility mean you can hack, mod, and build on it endlessly. Want a specific function? Ask us with an issue, we'll check it.
+---
 
-👉 **[Buy the RF REAPER and official boards](https://shop.bruce.computer)**
+## 🛠️ Hardware Requirements
 
-**Check our fully open-source hardware too:** https://bruce.computer/boards
+### Required:
+- **M5Stack Cardputer ADV** (~$40 USD)
+  - ESP32-S3 processor
+  - 56-key keyboard
+  - 1.14" 135x240 display
+  - Built-in WiFi (802.11b/g/n)
+  - Built-in Bluetooth (BLE 5.0)
 
-More custom devkit boards coming soon! Stay across our communities!
+### Recommended:
+- **Hydra RF 424 Cap** (~$35 USD)
+  - CC1101 Sub-GHz transceiver (433.05 MHz ISM)
+  - NRF24L01+ 2.4 GHz transceiver
+  - Auto-switching between bands
+  - Two antennas included
+  - SPI/GPIO header connection (no soldering if you have the Hydra)
 
-## :building_construction: How to install
+### Optional:
+- USB-C cable (for flashing & charging)
+- microSD card (for custom boot images & file storage)
+- Linux/Mac/Windows machine with Python 3.x
 
-### The easiest way to install Bruce is using our official Web Flasher!
+---
 
-### Check out: https://bruce.computer/flasher
+## 📦 What's Included
 
-Alternatively, you can download the latest binary from releases or actions and flash locally using esptool.py
-
-```sh
-esptool.py --port /dev/ttyACM0 write_flash 0x00000 Bruce-<device>.bin
+```
+kaiju/
+├── src/                        # Bruce firmware source code
+│   ├── main.cpp               # Boot screen (Kaiju / Cappy's Play)
+│   ├── core/
+│   │   ├── theme.h            # 70s color palette (0xFB60)
+│   │   ├── main_menu.cpp      # Menu order (RF-first)
+│   │   └── ...
+│   └── modules/
+│       ├── wifi/              # WiFi attacks & evil portal
+│       ├── rf/                # 433 MHz RF replay/scan
+│       ├── ble/               # Bluetooth spam & hijacking
+│       └── ...
+├── scripts/                    # 20 JavaScript attack apps
+│   ├── 01_rf_scanner.js       # Scan 433 MHz for active signals
+│   ├── 02_wifi_beacon_spam.js # Create fake WiFi networks
+│   ├── 03_ble_device_finder.js# Find nearby Bluetooth devices
+│   ├── ...
+│   └── 20_status_report.js    # System capabilities report
+├── sd_files/
+│   ├── boot.jpg               # 70's nautical splash screen
+│   └── ...
+├── platformio.ini             # Build config (Cap-ADV version)
+├── README.md                  # This file
+└── GETTING_STARTED.md         # Flashing & setup guide
 ```
 
-**For m5stack devices**
+---
 
-If you already use M5Launcher to manage your m5stack device, you can install it with OTA
+## 🚀 Quick Start
 
-Or you can burn it directly from the [m5burner tool](https://docs.m5stack.com/en/download), just search for 'Bruce' (My official builds will be uploaded by "owner" and have photos.) on the device category you want to and click on burn
+### 1. **Flash Kaiju Firmware**
 
-## :keyboard: Discord Server
+```bash
+# Clone this repo
+git clone https://github.com/CapSail/Kaiju.git
+cd Kaiju
 
-Contact us in our [Discord Server](https://discord.gg/WJ9XF9czVT)!
+# Install dependencies
+pip install platformio
 
-## :bookmark_tabs: Wiki
+# Build for Cardputer ADV
+platformio run -e m5stack-cardputer
 
-For more information on each function supported by Bruce, [read our wiki here](https://wiki.bruce.computer/).
-Also, [read our FAQ](https://wiki.bruce.computer/faq/)
+# Flash to device (USB connected)
+platformio run -e m5stack-cardputer --target upload
+```
 
-## :computer: List of Features
+Or use the **web flasher** at [bruce.computer](https://bruce.computer/) — select "Kaiju" binary when available.
+
+### 2. **Configure Hydra RF 424**
+
+In **Settings** menu on-device:
+1. Go to `Settings` → `RF Configuration`
+2. Set frequency to **433.05 MHz** (or your regional variant)
+3. Save and restart
+
+### 3. **Load Attack Scripts**
+
+Copy scripts from `scripts/` folder to your SD card:
+```
+SD_ROOT/
+├── scripts/
+│   ├── 01_rf_scanner.js
+│   ├── 02_wifi_beacon_spam.js
+│   └── ...
+```
+
+In Kaiju:
+1. Go to **Files** menu
+2. Navigate to `scripts/` folder
+3. Select a script to run (or use **Scripts** menu if available)
+
+### 4. **Customize Theme**
+
+In **Settings** menu:
+- Primary Color: Already set to 70's burnt orange (`0xFB60`)
+- Background: Black (`0x0000`)
+- You can tweak these live — settings persist
+
+---
+
+## 📡 What Can Kaiju Do?
 
 <details>
   <summary><h2>WiFi</h2></summary>
