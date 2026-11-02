@@ -3,8 +3,8 @@
 #include "sd_functions.h"
 #include <ArduinoJson.h>
 
-#define DEFAULT_PRICOLOR 0xFB60
-#define DEFAULT_SECCOLOR 0xC920
+#define DEFAULT_PRICOLOR 0xD69D
+#define DEFAULT_SECCOLOR 0xB5AD
 
 struct themeFiles {
     String wifi = "";
