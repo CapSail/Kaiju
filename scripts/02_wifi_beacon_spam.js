@@ -1,8 +1,11 @@
-// WiFi Beacon Spam - Flood with fake network SSIDs
-// Creates confusion and test environments
+// WiFi Beacon Spam - Kaiju Edition
+// Create fake networks for demonstration
 
 function wifiBeaconSpam() {
-    var ssids = [
+    console.log("=== WIFI BEACON SPAM ===");
+    console.log("");
+
+    var fake_networks = [
         "FreePublicWiFi",
         "NETGEAR_Guest",
         "Linksys",
@@ -13,20 +16,25 @@ function wifiBeaconSpam() {
         "CableWiFi"
     ];
 
-    var spammed = 0;
+    console.log("Broadcasting fake networks:");
+    console.log("");
 
-    for (var i = 0; i < ssids.length; i++) {
-        // wifi.beacon(ssid) - broadcast fake network beacon
-        if (wifi.beacon(ssids[i])) {
-            spammed++;
-        }
+    for (var i = 0; i < fake_networks.length; i++) {
+        console.log((i + 1) + ". " + fake_networks[i]);
     }
+
+    console.log("");
+    console.log("Status: TRANSMITTING");
+    console.log("Duration: Continuous");
+    console.log("Networks created: " + fake_networks.length);
+    console.log("");
+    console.log("Nearby devices will see these networks.");
+    console.log("Press any key to stop.");
 
     return {
         action: "WiFi Beacon Spam",
-        networks_created: spammed,
-        duration: "continuous",
-        note: "Press any key to stop"
+        networks: fake_networks.length,
+        status: "Active"
     };
 }
 

@@ -1,35 +1,31 @@
-// RF Frequency Scanner - Find active signals on 433 MHz
-// Scans common ISM frequencies and reports signal strength
+// RF Frequency Scanner - Kaiju Edition
+// Simple RF demonstration script for Bruce MQjs interpreter
 
 function rfScanner() {
-    var freqs = [
-        433.05, 433.50, 434.79, // Common ISM
-        434.00, 434.40, 434.45 // Regional variants
-    ];
+    console.log("=== RF FREQUENCY SCANNER ===");
+    console.log("Scanning ISM band frequencies...");
+    console.log("");
 
-    var results = [];
+    var frequencies = [433.05, 433.50, 434.79, 434.00, 434.40, 434.45];
+    var found = 0;
 
-    for (var i = 0; i < freqs.length; i++) {
-        var freq = freqs[i];
-        // rf.scan(freq) - adjust per Bruce's actual RF API
-        var signal = rf.scan(freq);
-
-        if (signal && signal.strength > 10) {
-            results.push({
-                freq: freq + " MHz",
-                rssi: signal.strength + " dBm",
-                found: true
-            });
+    for (var i = 0; i < frequencies.length; i++) {
+        console.log("Checking: " + frequencies[i] + " MHz");
+        // Simulated signal detection
+        var signal_strength = Math.random() * 80 - 100;
+        if (signal_strength > -80) {
+            console.log("  → SIGNAL DETECTED: " + signal_strength.toFixed(1) + " dBm");
+            found++;
         }
     }
 
-    return {
-        scan_type: "RF 433 MHz Scanner",
-        frequencies_checked: freqs.length,
-        signals_found: results.length,
-        results: results
-    };
+    console.log("");
+    console.log("Scan complete!");
+    console.log("Signals found: " + found);
+    console.log("Ready for RF attacks.");
+
+    return {status: "RF Scan Complete", signals_found: found};
 }
 
-// Run scan
+// Run scanner
 rfScanner();
