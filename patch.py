@@ -27,14 +27,14 @@ if not isfile(join(FRAMEWORK_DIR,mcu, "lib", ".patched")):
 
     if mcu=="esp32c5" or mcu=="esp32c6" :
         env.Execute(
-            "pio pkg exec -p toolchain-riscv32-esp -- riscv32-esp-elf-objcopy  --weaken-symbol=ieee80211_raw_frame_sanity_check %s %s"
+            "python -m platformio pkg exec -p toolchain-riscv32-esp -- riscv32-esp-elf-objcopy  --weaken-symbol=ieee80211_raw_frame_sanity_check %s %s"
             % (original_file, patched_file)
         )
     elif mcu=="esp32p4":
         """Do nothing"""
     else:
         env.Execute(
-            "pio pkg exec -p toolchain-xtensa-%s -- xtensa-%s-elf-objcopy  --weaken-symbol=ieee80211_raw_frame_sanity_check %s %s"
+            "python -m platformio pkg exec -p toolchain-xtensa-%s -- xtensa-%s-elf-objcopy  --weaken-symbol=ieee80211_raw_frame_sanity_check %s %s"
             % (mcu, mcu, original_file, patched_file)
         )
 
