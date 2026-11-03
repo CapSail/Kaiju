@@ -12,7 +12,7 @@ Build: `python -m platformio run -e cardputer-adv -t upload` from this folder.
 | 4 | Packet sniffer: live counts by frame type, hop or lock | Verified on device |
 | 5 | Sniffer recording to SD as PCAP | Verified on device (records and saves). Wireshark open not yet confirmed |
 | 6 | Beacon spam: funny, random, single + counter, custom SD list, Rick-roll names (our own lines). Random MAC per beacon, retries, channel hop | Built, awaiting device test |
-| 7 | Deauth flood: scan, pick AP, then a 3-second beacon check on its channel. PMF-required networks (WPA3, or PMF required) are blocked. Broadcast deauth via the AP interface | Built, awaiting device test. Test on your own AP with PMF off |
+| 7 | Deauth flood: list-wide check (16 s passive beacon sweep, channels 1-13) tags each network VULN (no PMF), PART (PMF optional), or PMF (required). Per-target 3 s check before running. Broadcast deauth via the AP interface | Built, awaiting device test. Test on your own AP with PMF off |
 | 8 | Karma: hops channels 1-13 (H toggles to a fixed channel). Answers each probe on the channel it came from, plus a beacon for each name | Built, awaiting device test |
 
 ## Need

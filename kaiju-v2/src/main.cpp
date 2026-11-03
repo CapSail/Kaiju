@@ -879,64 +879,31 @@ void attackRadio() {
     }
 }
 
-void drawNetList(const char *title, const char *footer) {
-    auto &d = M5Cardputer.Display;
-    d.fillScreen(COLOR_BG);
-    d.setTextSize(1);
-    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
-    char header[48];
-    snprintf(header, sizeof(header), "%s: %d found", title, netCount);
-    d.drawString(header, 4, 4);
-    for (int row = 0; row < WIFI_VISIBLE_ROWS; row++) {
-        int idx = netTop + row;
-        if (idx >= netCount) break;
-        int y = 18 + row * 12;
-        if (idx == netSel) {
-            d.fillRect(0, y - 1, d.width(), 11, COLOR_PRIMARY);
-            d.setTextColor(COLOR_BG, COLOR_PRIMARY);
-        } else {
-            d.setTextColor(COLOR_PRIMARY, COLOR_BG);
-        }
-        String ssid = WiFi.SSID(idx);
-        if (ssid.length() == 0) ssid = "<hidden>";
-        char line[48];
-        snprintf(line, sizeof(line), "%-13.13s %-6s ch%-2ld %4ld", ssid.c_str(),
-                 authLabel(WiFi.encryptionType(idx)), (long)WiFi.channel(idx), (long)WiFi.RSSI(idx));
-        d.drawString(line, 4, y);
-    }
-    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
-    d.drawString(footer, 4, 124);
-}
+constexpr int NET_LIST_MAX = 32;
+constexpr int PMF_MAX_APS = 40;
+constexpr uint32_t PMF_DWELL_MS = 600;
+constexpr int PMF_SWEEPS = 2;
 
-void drawDeauthSelect() {
-    drawNetList("Deauth: pick AP", "Enter check AP  Bksp back");
-}
+struct PmfEntry {
+    uint8_t bssid[6];
+    uint8_t flags;
+};
+PmfEntry pmfTable[PMF_MAX_APS];
+std::atomic<int> pmfCount{0};
+bool pmfPassActive = false;
+int pmfPassCh = CH_FIRST;
+int pmfPassSweep = 0;
+uint32_t pmfPassDwell = 0;
 
-void enterDeauthSelect() {
-    attackRadio();
-    drawWifiMessage("Scanning...");
-    WiFi.scanDelete();
-    int n = WiFi.scanNetworks();
-    netCount = n > 0 ? n : 0;
-    netSel = 0;
-    netTop = 0;
-    drawDeauthSelect();
-}
-
-void moveDeauthSelection(int delta) {
-    int next = netSel + delta;
-    if (next < 0 || next >= netCount) return;
-    netSel = next;
-    if (netSel < netTop) netTop = netSel;
-    if (netSel >= netTop + WIFI_VISIBLE_ROWS) netTop = netSel - WIFI_VISIBLE_ROWS + 1;
-    drawDeauthSelect();
-}
-
-void chooseDeauthTarget() {
-    WiFi.BSSID(netSel, deauthBssid);
-    snprintf(deauthSsid, sizeof(deauthSsid), "%s", WiFi.SSID(netSel).c_str());
-    deauthCh = static_cast<int>(WiFi.channel(netSel));
-}
+int dlCount = 0;
+int dlSel = 0;
+int dlTop = 0;
+char dlSsid[NET_LIST_MAX][SPAM_SSID_MAX + 1];
+uint8_t dlBssid[NET_LIST_MAX][6];
+wifi_auth_mode_t dlAuth[NET_LIST_MAX];
+int dlChan[NET_LIST_MAX];
+int dlRssi[NET_LIST_MAX];
+PmfVerdict dlVerdict[NET_LIST_MAX];
 
 void parseRsn(const uint8_t *d, uint32_t n, uint8_t &flags) {
     flags |= CHK_RSN;
@@ -960,12 +927,7 @@ void parseRsn(const uint8_t *d, uint32_t n, uint8_t &flags) {
     if (caps & 0x40) flags |= CHK_MFPR;
 }
 
-void onPmfCheck(void *buf, wifi_promiscuous_pkt_type_t type) {
-    if (type != WIFI_PKT_MGMT) return;
-    auto *pkt = static_cast<wifi_promiscuous_pkt_t *>(buf);
-    uint32_t len = pkt->rx_ctrl.sig_len;
-    if (len < 40 || ((pkt->payload[0] >> 4) & 0xF) != 0x8) return;
-    if (memcmp(&pkt->payload[16], deauthBssid, 6) != 0) return;
+uint8_t parseBeaconFlags(const wifi_promiscuous_pkt_t *pkt, uint32_t len) {
     uint8_t flags = CHK_SEEN;
     uint32_t end = len - 4;
     uint32_t p = 36;
@@ -976,7 +938,7 @@ void onPmfCheck(void *buf, wifi_promiscuous_pkt_type_t type) {
         if (tag == 48) parseRsn(&pkt->payload[p + 2], tlen, flags);
         p += 2 + tlen;
     }
-    checkFlags.fetch_or(flags, std::memory_order_relaxed);
+    return flags;
 }
 
 PmfVerdict computeVerdict(uint8_t f) {
@@ -989,6 +951,174 @@ PmfVerdict computeVerdict(uint8_t f) {
 
 bool verdictAllowsDeauth(PmfVerdict v) {
     return v == V_NO_PMF || v == V_PMF_OPTIONAL;
+}
+
+const char *verdictTag(PmfVerdict v) {
+    switch (v) {
+    case V_NO_PMF: return "VULN";
+    case V_PMF_OPTIONAL: return "PART";
+    case V_PMF_REQUIRED: return "PMF";
+    default: return "--";
+    }
+}
+
+void drawDeauthSelect() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    char header[48];
+    if (pmfPassActive) {
+        snprintf(header, sizeof(header), "Checking ch%-2d  sweep %d/%d", pmfPassCh, pmfPassSweep + 1, PMF_SWEEPS);
+    } else {
+        snprintf(header, sizeof(header), "Deauth: %d networks", dlCount);
+    }
+    d.drawString(header, 4, 4);
+    for (int row = 0; row < WIFI_VISIBLE_ROWS; row++) {
+        int idx = dlTop + row;
+        if (idx >= dlCount) break;
+        int y = 18 + row * 12;
+        if (idx == dlSel) {
+            d.fillRect(0, y - 1, d.width(), 11, COLOR_PRIMARY);
+            d.setTextColor(COLOR_BG, COLOR_PRIMARY);
+        } else {
+            d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+        }
+        const char *nm = dlSsid[idx][0] != '\0' ? dlSsid[idx] : "<hidden>";
+        char line[48];
+        snprintf(line, sizeof(line), "%-12.12s %-6s %-4s ch%-2d %3d", nm, authLabel(dlAuth[idx]),
+                 verdictTag(dlVerdict[idx]), dlChan[idx], dlRssi[idx]);
+        d.drawString(line, 4, y);
+    }
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString("VULN no PMF  PART optional  PMF req", 4, 114);
+    d.drawString(pmfPassActive ? "Bksp cancel check" : "Enter check  R recheck  Bksp back", 4, 124);
+}
+
+void loadDeauthScan() {
+    int n = WiFi.scanNetworks();
+    dlCount = n > 0 ? (n < NET_LIST_MAX ? n : NET_LIST_MAX) : 0;
+    for (int i = 0; i < dlCount; i++) {
+        snprintf(dlSsid[i], sizeof(dlSsid[i]), "%s", WiFi.SSID(i).c_str());
+        WiFi.BSSID(i, dlBssid[i]);
+        dlAuth[i] = WiFi.encryptionType(i);
+        dlChan[i] = static_cast<int>(WiFi.channel(i));
+        dlRssi[i] = static_cast<int>(WiFi.RSSI(i));
+        dlVerdict[i] = V_NOT_SEEN;
+    }
+    dlSel = 0;
+    dlTop = 0;
+}
+
+void onPmfPass(void *buf, wifi_promiscuous_pkt_type_t type) {
+    if (type != WIFI_PKT_MGMT) return;
+    auto *pkt = static_cast<wifi_promiscuous_pkt_t *>(buf);
+    uint32_t len = pkt->rx_ctrl.sig_len;
+    if (len < 40 || ((pkt->payload[0] >> 4) & 0xF) != 0x8) return;
+    int count = pmfCount.load(std::memory_order_relaxed);
+    int idx = -1;
+    for (int i = 0; i < count; i++) {
+        if (memcmp(pmfTable[i].bssid, &pkt->payload[16], 6) == 0) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) {
+        if (count >= PMF_MAX_APS) return;
+        idx = count;
+        memcpy(pmfTable[idx].bssid, &pkt->payload[16], 6);
+        pmfTable[idx].flags = 0;
+        pmfCount.store(count + 1, std::memory_order_release);
+    }
+    pmfTable[idx].flags |= parseBeaconFlags(pkt, len);
+}
+
+void onPmfCheck(void *buf, wifi_promiscuous_pkt_type_t type) {
+    if (type != WIFI_PKT_MGMT) return;
+    auto *pkt = static_cast<wifi_promiscuous_pkt_t *>(buf);
+    uint32_t len = pkt->rx_ctrl.sig_len;
+    if (len < 40 || ((pkt->payload[0] >> 4) & 0xF) != 0x8) return;
+    if (memcmp(&pkt->payload[16], deauthBssid, 6) != 0) return;
+    checkFlags.fetch_or(parseBeaconFlags(pkt, len), std::memory_order_relaxed);
+}
+
+void tagDeauthList() {
+    int count = pmfCount.load(std::memory_order_acquire);
+    for (int i = 0; i < dlCount; i++) {
+        dlVerdict[i] = V_NOT_SEEN;
+        for (int j = 0; j < count; j++) {
+            if (memcmp(pmfTable[j].bssid, dlBssid[i], 6) == 0) {
+                dlVerdict[i] = computeVerdict(pmfTable[j].flags);
+                break;
+            }
+        }
+    }
+}
+
+void startPmfPass() {
+    pmfCount.store(0, std::memory_order_release);
+    for (int i = 0; i < dlCount; i++) dlVerdict[i] = V_NOT_SEEN;
+    pmfPassCh = CH_FIRST;
+    pmfPassSweep = 0;
+    WiFi.mode(WIFI_STA);
+    setAnalyzerChannel(pmfPassCh);
+    wifi_promiscuous_filter_t filter = {WIFI_PROMIS_FILTER_MASK_MGMT};
+    esp_wifi_set_promiscuous_filter(&filter);
+    esp_wifi_set_promiscuous_rx_cb(&onPmfPass);
+    esp_wifi_set_promiscuous(true);
+    pmfPassActive = true;
+    pmfPassDwell = millis();
+    drawDeauthSelect();
+}
+
+void stopPmfPass() {
+    if (!pmfPassActive) return;
+    pmfPassActive = false;
+    esp_wifi_set_promiscuous(false);
+    delay(20);
+    tagDeauthList();
+}
+
+void tickPmfPass() {
+    if (!pmfPassActive) return;
+    uint32_t now = millis();
+    if (now - pmfPassDwell < PMF_DWELL_MS) return;
+    pmfPassDwell = now;
+    pmfPassCh++;
+    if (pmfPassCh > CH_LAST) {
+        pmfPassCh = CH_FIRST;
+        pmfPassSweep++;
+        if (pmfPassSweep >= PMF_SWEEPS) {
+            stopPmfPass();
+            drawDeauthSelect();
+            return;
+        }
+    }
+    setAnalyzerChannel(pmfPassCh);
+    drawDeauthSelect();
+}
+
+void enterDeauthSelect() {
+    attackRadio();
+    drawWifiMessage("Scanning...");
+    WiFi.scanDelete();
+    loadDeauthScan();
+    startPmfPass();
+}
+
+void moveDeauthSelection(int delta) {
+    int next = dlSel + delta;
+    if (next < 0 || next >= dlCount) return;
+    dlSel = next;
+    if (dlSel < dlTop) dlTop = dlSel;
+    if (dlSel >= dlTop + WIFI_VISIBLE_ROWS) dlTop = dlSel - WIFI_VISIBLE_ROWS + 1;
+    drawDeauthSelect();
+}
+
+void chooseDeauthTarget() {
+    memcpy(deauthBssid, dlBssid[dlSel], 6);
+    snprintf(deauthSsid, sizeof(deauthSsid), "%s", dlSsid[dlSel]);
+    deauthCh = dlChan[dlSel];
 }
 
 void drawDeauthCheck() {
@@ -1271,6 +1401,7 @@ void loop() {
     }
     if (screen == Screen::WifiSpamRun) tickSpam();
     if (screen == Screen::WifiDeauthCheck) tickDeauthCheck();
+    if (screen == Screen::WifiDeauthSelect) tickPmfPass();
     if (screen == Screen::WifiDeauthRun) tickDeauth();
     if (screen == Screen::WifiKarmaRun) tickKarma();
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
@@ -1470,6 +1601,13 @@ void loop() {
         }
         break;
     case Screen::WifiDeauthSelect:
+        if (pmfPassActive) {
+            if (back) {
+                stopPmfPass();
+                drawDeauthSelect();
+            }
+            break;
+        }
         if (back) {
             screen = Screen::WifiMenu;
             drawWifiMenu();
@@ -1477,8 +1615,10 @@ void loop() {
             moveDeauthSelection(-1);
         } else if (down) {
             moveDeauthSelection(1);
+        } else if (wordHas(ks.word, 'r')) {
+            if (dlCount > 0) startPmfPass();
         } else if (ks.enter) {
-            if (netCount > 0) {
+            if (dlCount > 0) {
                 chooseDeauthTarget();
                 screen = Screen::WifiDeauthCheck;
                 startDeauthCheck();
