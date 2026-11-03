@@ -8,26 +8,27 @@ Build: `python -m platformio run -e cardputer-adv -t upload` from this folder.
 |---|---|---|
 | 1 | Splash, keyboard menu, back/enter | Verified on device |
 | 2 | WiFi scan (SSID, dBm, channel) | Verified on device |
-| 3 | WiFi tools menu, channel analyzer (passive, 13 channels, beacon counts) | Verified on device |
-| 4 | Packet sniffer: live counts by frame type, hop or lock channel | Verified on device |
-| 5 | Sniffer recording to SD as PCAP (256-byte snaplen) | Verified on device: records and saves. Wireshark open not yet confirmed |
-| 6 | Beacon spam: funny names, random names, single name + counter, custom list from SD (/kaiju/ssids.txt). Random MAC per beacon, retries on full buffer, channel hop 1-11 option | Built, awaiting device test |
+| 3 | WiFi tools menu, channel analyzer | Verified on device |
+| 4 | Packet sniffer: live counts by frame type, hop or lock | Verified on device |
+| 5 | Sniffer recording to SD as PCAP | Verified on device (records and saves). Wireshark open not yet confirmed |
+| 6 | Beacon spam: funny, random, single + counter, custom SD list, Rick-roll names (our own lines). Random MAC per beacon, retries, channel hop | Built, awaiting device test |
+| 7 | Deauth flood: pick AP from scan, broadcast deauth on its channel. Bruce's frame template, AP interface | Built, awaiting device test. Test on your own AP and watch with the sniffer |
+| 8 | Karma: answers probe requests with probe responses for the requested name, on a fixed channel | Built, awaiting device test |
 
 ## Need
 
 | Step | Feature | Notes |
 |---|---|---|
-| 7 | Deauth | The ESP-IDF doc for `esp_wifi_80211_tx` lists beacon, probe, action, and data frames only, so deauth is undocumented. Test on your own AP first, and watch it with the sniffer |
-| 8 | Probe request flood | Probe frames are a documented type |
-| 9 | Evil portal (captive portal: DNS and HTTP) | Larger: needs a DNS server and web server. Lab use only |
-| 10 | Deauth and beacon detection alerts on the sniffer | Defensive: flag a spike in deauth or unexpected beacons |
-| 11 | BLE tools | Placeholder today |
-| 12 | RF 433 MHz (CC1101) listen and spectrum | Port logic from Bruce (AGPL-3). Needs Hydra pin config |
-| 13 | NRF24 2.4 GHz tools | Placeholder today. Hydra pin config |
-| 14 | IR send and read | Placeholder today |
-| 15 | RFID read | Placeholder today. Only tools that work with what's on the Hydra/Cardputer |
-| 16 | Files (SD browser) | Placeholder today |
-| 17 | Settings (brightness, theme) | Placeholder today |
+| 9 | Handshake capture: deauth a target AP and save EAPOL frames to PCAP | Bruce has it. Reuses sniffer and PCAP code |
+| 10 | Evil portal: fake captive portal (DNS + web server) | Largest. Needs DNS and HTTP servers and the portal pages |
+| 11 | Deauth and beacon detection alerts on the sniffer | Defensive: flag a spike in deauth or unexpected beacons |
+| 12 | BLE tools | Placeholder today |
+| 13 | RF 433 MHz (CC1101) listen and spectrum | Port logic from Bruce (AGPL-3). Needs Hydra pin config |
+| 14 | NRF24 2.4 GHz tools | Placeholder today. Hydra pin config |
+| 15 | IR send and read | Placeholder today |
+| 16 | RFID read | Placeholder today. Only tools that work with what's on the Hydra/Cardputer |
+| 17 | Files (SD browser) | Placeholder today |
+| 18 | Settings (brightness, theme) | Placeholder today |
 
 ## Reuse rules
 
