@@ -33,7 +33,7 @@ Build: `python -m platformio run -e cardputer-adv -t upload` from this folder.
 
 ## Limits
 
-- Logs keep the newest 200 entries. Wardrive log, Karma log, and per-SSID creds files rotate (creds go to _creds_2.csv, _creds_3.csv, and so on) so nothing is dropped silently.
+- Logs keep the newest 200 entries. Wardrive log and Karma log trim their oldest lines. Per-SSID creds files rotate at 200 lines (_creds_2.csv, _creds_3.csv, and so on). After 50 files, the oldest creds file is deleted to make room (first in, first out), so the newest captures are always kept.
 - Only useful data is saved. Kaijugotchi writes one wardrive line per new network and keeps a PCAP only for a crackable handshake. Failed hunts leave no file and no log line. Karma logs only hosts that captured credentials. A manual handshake capture is deleted on stop unless it is crackable.
 - Packet recording stops at 4 MB and says so on screen.
 - Viewer lists up to 50 files and shows the newest 60 entries of a file.

