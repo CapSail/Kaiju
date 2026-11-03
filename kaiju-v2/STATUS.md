@@ -19,7 +19,7 @@ Build: `python -m platformio run -e cardputer-adv -t upload` from this folder.
 
 | Step | Feature | Notes |
 |---|---|---|
-| 9 | Handshake capture: deauth a target AP and save EAPOL frames to PCAP | Bruce has it. Reuses sniffer and PCAP code |
+| 9 | Handshake capture: pick an AP from the list, save its beacon and all EAPOL frames to /pcap/hs_*.pcap. Counts M1-M4 and shows when crackable. D toggles deauth to force reconnects | Built, awaiting device test |
 | 10 | Evil portal: fake captive portal (DNS + web server) | Largest. Needs DNS and HTTP servers and the portal pages |
 | 11 | Deauth and beacon detection alerts on the sniffer | Defensive: flag a spike in deauth or unexpected beacons |
 | 12 | BLE tools | Placeholder today |

