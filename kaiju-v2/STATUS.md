@@ -11,7 +11,7 @@ Build: `python -m platformio run -e cardputer-adv -t upload` from this folder.
 | 3 | WiFi tools menu, channel analyzer (passive, 13 channels, beacon counts) | Verified on device |
 | 4 | Packet sniffer: live counts by frame type, hop or lock channel | Verified on device |
 | 5 | Sniffer recording to SD as PCAP (256-byte snaplen) | Verified on device: records and saves. Wireshark open not yet confirmed |
-| 6 | Beacon spam: four lab SSIDs (KaijuLab-1 to 4), channel select | Built, awaiting device test. Verify from a phone's WiFi list |
+| 6 | Beacon spam: funny names, random names, single name + counter, custom list from SD (/kaiju/ssids.txt). Random MAC per beacon, retries on full buffer, channel hop 1-11 option | Built, awaiting device test |
 
 ## Need
 

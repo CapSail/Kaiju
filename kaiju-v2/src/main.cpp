@@ -32,7 +32,7 @@ constexpr uint32_t CH_DWELL_MS = 300;
 constexpr int BAR_BASE_Y = 108;
 constexpr int BAR_MAX_H = 72;
 
-enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiBeacon };
+enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun };
 
 Screen screen = Screen::Menu;
 int selected = 0;
@@ -365,12 +365,16 @@ void pcapFlush(uint32_t budget) {
     pcapTail.store(tail, std::memory_order_release);
 }
 
-void startPcap() {
+bool ensureSd() {
     if (!sdReady) {
         SPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
         sdReady = SD.begin(SD_CS_PIN, SPI, 25000000);
     }
-    if (!sdReady) {
+    return sdReady;
+}
+
+void startPcap() {
+    if (!ensureSd()) {
         snprintf(pcapMsg, sizeof(pcapMsg), "no SD card found");
         return;
     }
@@ -530,102 +534,254 @@ void moveSnifferChannel(int delta) {
     drawSniffer();
 }
 
-const char *const BEACON_SSIDS[] = {"KaijuLab-1", "KaijuLab-2", "KaijuLab-3", "KaijuLab-4"};
-constexpr int BEACON_SSID_COUNT = sizeof(BEACON_SSIDS) / sizeof(BEACON_SSIDS[0]);
-constexpr uint32_t BEACON_PERIOD_MS = 100;
-constexpr uint32_t BEACON_REDRAW_MS = 1000;
-constexpr size_t BEACON_FRAME_MAX = 128;
+constexpr int SPAM_MODE_COUNT = 4;
+const char *const SPAM_MODE_NAMES[SPAM_MODE_COUNT] = {"Funny names", "Random names", "Single name + counter",
+                                                       "Custom list (SD)"};
+enum SpamMode : uint8_t { SPAM_FUNNY, SPAM_RANDOM, SPAM_SINGLE, SPAM_CUSTOM };
+constexpr char SPAM_CUSTOM_PATH[] = "/kaiju/ssids.txt";
+constexpr int SPAM_CUSTOM_MAX = 64;
+constexpr size_t SPAM_SSID_MAX = 32;
+constexpr size_t SPAM_BASE_MAX = 26;
+constexpr size_t SPAM_FRAME_MAX = 128;
+constexpr int SPAM_HOP_MAX_CH = 11;
+const char *const SPAM_FUNNY_NAMES[] = {
+    "Router? More Like Outer Space", "Pretty Fly for a WiFi", "The LAN Before Time",
+    "Bill Wi the Science Fi",        "Get Off My LAN",        "Tell My WiFi Love Her",
+    "It Hurts When IP",              "Drop It Like Its Hotspot", "Loading Wi-Fi Please Wait",
+    "Free Candy Hotspot"};
+constexpr int SPAM_FUNNY_COUNT = sizeof(SPAM_FUNNY_NAMES) / sizeof(SPAM_FUNNY_NAMES[0]);
+constexpr uint8_t SPAM_RATES[] = {0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24};
 
-bool beaconRunning = false;
-int beaconCh = 6;
-uint32_t beaconSent = 0;
-uint32_t beaconErrors = 0;
-uint32_t beaconLastSend = 0;
-uint32_t beaconLastDraw = 0;
+int spamModeSel = 0;
+SpamMode spamMode = SPAM_FUNNY;
+bool spamRunning = false;
+bool spamHop = false;
+int spamCh = 6;
+uint32_t spamSent = 0;
+uint32_t spamErrors = 0;
+uint32_t spamRounds = 0;
+uint32_t spamLastRound = 0;
+uint32_t spamLastDraw = 0;
+uint32_t spamCounter = 1;
+char spamLast[SPAM_SSID_MAX + 1] = "";
+char spamBase[SPAM_BASE_MAX + 1] = "";
+char spamText[SPAM_BASE_MAX + 1] = "";
+int spamTextLen = 0;
+char spamCustom[SPAM_CUSTOM_MAX][SPAM_SSID_MAX + 1];
+int spamCustomCount = 0;
+char spamMsg[48] = "";
 
-size_t buildBeacon(uint8_t *f, const char *ssid, uint8_t idx, uint8_t ch) {
-    static const uint8_t RATES[] = {0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24};
-    uint8_t hdr[24] = {0x80, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                       0x02, 0x4b, 0x41, 0x49, 0x00, idx, 0x02, 0x4b, 0x41, 0x49, 0x00, idx,
-                       0x00, 0x00};
-    size_t p = 0;
-    memcpy(f, hdr, sizeof(hdr));
-    p = sizeof(hdr);
-    memset(f + p, 0, 8);
-    p += 8;
-    f[p++] = 0x64;
-    f[p++] = 0x00;
-    f[p++] = 0x01;
-    f[p++] = 0x04;
-    size_t n = strlen(ssid);
-    f[p++] = 0x00;
-    f[p++] = static_cast<uint8_t>(n);
-    memcpy(f + p, ssid, n);
-    p += n;
-    f[p++] = 0x01;
-    f[p++] = sizeof(RATES);
-    memcpy(f + p, RATES, sizeof(RATES));
-    p += sizeof(RATES);
-    f[p++] = 0x03;
-    f[p++] = 0x01;
-    f[p++] = ch;
-    return p;
-}
-
-void sendBeacons() {
-    uint8_t frame[BEACON_FRAME_MAX];
-    for (int i = 0; i < BEACON_SSID_COUNT; i++) {
-        size_t len = buildBeacon(frame, BEACON_SSIDS[i], static_cast<uint8_t>(i), static_cast<uint8_t>(beaconCh));
-        if (esp_wifi_80211_tx(WIFI_IF_STA, frame, static_cast<int>(len), true) == ESP_OK) {
-            beaconSent++;
-        } else {
-            beaconErrors++;
-        }
+void spamRandomMac(uint8_t *mac) {
+    mac[0] = static_cast<uint8_t>((random(0, 256) & 0xFC) | 0x02);
+    for (int i = 1; i < 6; i++) {
+        mac[i] = static_cast<uint8_t>(random(0, 256));
     }
 }
 
-void drawBeacon() {
+void spamRandomName(char *out) {
+    static const char CHARSET[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    int len = random(7, 29);
+    for (int i = 0; i < len; i++) {
+        out[i] = CHARSET[random(0, 52)];
+    }
+    out[len] = '\0';
+}
+
+size_t buildBeacon(uint8_t *f, const char *ssid, const uint8_t mac[6], uint8_t ch) {
+    static const uint8_t head[10] = {0x80, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    uint8_t *p = f;
+    memcpy(p, head, sizeof(head));
+    memcpy(p + 10, mac, 6);
+    memcpy(p + 16, mac, 6);
+    p[22] = 0x00;
+    p[23] = 0x00;
+    p += 24;
+    memset(p, 0, 8);
+    p += 8;
+    *p++ = 0x64;
+    *p++ = 0x00;
+    *p++ = 0x01;
+    *p++ = 0x04;
+    size_t n = strlen(ssid);
+    *p++ = 0x00;
+    *p++ = static_cast<uint8_t>(n);
+    memcpy(p, ssid, n);
+    p += n;
+    *p++ = 0x01;
+    *p++ = static_cast<uint8_t>(sizeof(SPAM_RATES));
+    memcpy(p, SPAM_RATES, sizeof(SPAM_RATES));
+    p += sizeof(SPAM_RATES);
+    *p++ = 0x03;
+    *p++ = 0x01;
+    *p++ = ch;
+    return static_cast<size_t>(p - f);
+}
+
+esp_err_t spamTx(const uint8_t *frame, size_t len) {
+    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, static_cast<int>(len), true);
+    for (uint8_t i = 0; err == ESP_ERR_NO_MEM && i < 8; i++) {
+        delay(1);
+        err = esp_wifi_80211_tx(WIFI_IF_STA, frame, static_cast<int>(len), true);
+    }
+    return err;
+}
+
+void spamSendName(const char *name) {
+    uint8_t mac[6];
+    uint8_t frame[SPAM_FRAME_MAX];
+    for (int k = 0; k < 2; k++) {
+        spamRandomMac(mac);
+        size_t len = buildBeacon(frame, name, mac, static_cast<uint8_t>(spamCh));
+        if (spamTx(frame, len) == ESP_OK) {
+            spamSent++;
+        } else {
+            spamErrors++;
+        }
+    }
+    snprintf(spamLast, sizeof(spamLast), "%s", name);
+    delay(1);
+}
+
+void spamRound() {
+    spamRounds++;
+    if (spamHop) {
+        spamCh = spamCh >= SPAM_HOP_MAX_CH ? 1 : spamCh + 1;
+        setAnalyzerChannel(spamCh);
+    }
+    char name[SPAM_SSID_MAX + 1];
+    switch (spamMode) {
+    case SPAM_FUNNY:
+        for (int i = 0; i < SPAM_FUNNY_COUNT; i++) spamSendName(SPAM_FUNNY_NAMES[i]);
+        break;
+    case SPAM_RANDOM:
+        for (int i = 0; i < 4; i++) {
+            spamRandomName(name);
+            spamSendName(name);
+        }
+        break;
+    case SPAM_SINGLE:
+        snprintf(name, sizeof(name), "%s-%lu", spamBase, (unsigned long)spamCounter);
+        spamCounter = spamCounter >= 9999 ? 1 : spamCounter + 1;
+        spamSendName(name);
+        break;
+    case SPAM_CUSTOM:
+        for (int i = 0; i < spamCustomCount; i++) spamSendName(spamCustom[i]);
+        break;
+    }
+}
+
+bool loadSpamCustom() {
+    spamCustomCount = 0;
+    if (!ensureSd()) {
+        snprintf(spamMsg, sizeof(spamMsg), "no SD card found");
+        return false;
+    }
+    File f = SD.open(SPAM_CUSTOM_PATH, FILE_READ);
+    if (!f) {
+        snprintf(spamMsg, sizeof(spamMsg), "missing %s", SPAM_CUSTOM_PATH);
+        return false;
+    }
+    while (f.available() && spamCustomCount < SPAM_CUSTOM_MAX) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0) continue;
+        snprintf(spamCustom[spamCustomCount], SPAM_SSID_MAX + 1, "%s", line.c_str());
+        spamCustomCount++;
+    }
+    f.close();
+    if (spamCustomCount == 0) {
+        snprintf(spamMsg, sizeof(spamMsg), "file has no names");
+        return false;
+    }
+    snprintf(spamMsg, sizeof(spamMsg), "%d names loaded", spamCustomCount);
+    return true;
+}
+
+void drawSpamSelect() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(2);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    d.drawString("Beacon", 8, 4);
+    d.setTextSize(1);
+    for (int i = 0; i < SPAM_MODE_COUNT; i++) {
+        int y = 30 + i * 12;
+        if (i == spamModeSel) {
+            d.fillRect(0, y - 1, d.width(), 11, COLOR_PRIMARY);
+            d.setTextColor(COLOR_BG, COLOR_PRIMARY);
+        } else {
+            d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+        }
+        d.drawString(SPAM_MODE_NAMES[i], 10, y);
+    }
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    if (spamMsg[0] != '\0') d.drawString(spamMsg, 4, 100);
+    d.drawString("Enter select  Bksp back", 4, 124);
+}
+
+void drawSpamText() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    d.drawString("Base name (max 26 chars):", 4, 20);
+    char line[40];
+    snprintf(line, sizeof(line), "%s_", spamText);
+    d.drawString(line, 4, 40);
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString("Enter start  Bksp delete", 4, 124);
+}
+
+void drawSpamRun() {
     auto &d = M5Cardputer.Display;
     d.fillScreen(COLOR_BG);
     d.setTextSize(1);
     d.setTextColor(COLOR_PRIMARY, COLOR_BG);
     char line[48];
-    snprintf(line, sizeof(line), "Beacon spam  ch%-2d  %s", beaconCh, beaconRunning ? "RUNNING" : "stopped");
+    snprintf(line, sizeof(line), "Spam: %s", SPAM_MODE_NAMES[spamMode]);
     d.drawString(line, 4, 4);
-    snprintf(line, sizeof(line), "Sent %lu  errors %lu", (unsigned long)beaconSent, (unsigned long)beaconErrors);
-    d.drawString(line, 4, 20);
-    for (int i = 0; i < BEACON_SSID_COUNT; i++) {
-        d.drawString(BEACON_SSIDS[i], 12, 36 + i * 12);
+    if (spamHop) {
+        snprintf(line, sizeof(line), "%s  hop 1-%d", spamRunning ? "RUNNING" : "stopped", SPAM_HOP_MAX_CH);
+    } else {
+        snprintf(line, sizeof(line), "%s  ch%d", spamRunning ? "RUNNING" : "stopped", spamCh);
     }
+    d.drawString(line, 4, 18);
+    snprintf(line, sizeof(line), "Sent %lu  errors %lu", (unsigned long)spamSent, (unsigned long)spamErrors);
+    d.drawString(line, 4, 32);
+    snprintf(line, sizeof(line), "Rounds %lu  hop %s", (unsigned long)spamRounds, spamHop ? "on" : "off");
+    d.drawString(line, 4, 44);
+    snprintf(line, sizeof(line), "Last: %s", spamLast);
+    d.drawString(line, 4, 56);
     d.setTextColor(COLOR_SECONDARY, COLOR_BG);
-    d.drawString("Enter start/stop  ;. ch  Bksp back", 4, 124);
+    d.drawString("Enter run  H hop  ;. ch  Bksp back", 4, 124);
 }
 
-void startBeacon() {
+void startSpam() {
     WiFi.mode(WIFI_STA);
-    setAnalyzerChannel(beaconCh);
-    beaconSent = 0;
-    beaconErrors = 0;
-    beaconLastSend = 0;
-    beaconLastDraw = 0;
-    beaconRunning = true;
-    drawBeacon();
+    setAnalyzerChannel(spamCh);
+    spamSent = 0;
+    spamErrors = 0;
+    spamRounds = 0;
+    spamLast[0] = '\0';
+    spamLastRound = 0;
+    spamLastDraw = 0;
+    spamRunning = true;
 }
 
-void stopBeacon() {
-    beaconRunning = false;
+void stopSpam() {
+    spamRunning = false;
 }
 
-void tickBeacon() {
-    if (!beaconRunning) return;
+void tickSpam() {
+    if (!spamRunning) return;
     uint32_t now = millis();
-    if (now - beaconLastSend >= BEACON_PERIOD_MS) {
-        beaconLastSend = now;
-        sendBeacons();
+    if (now - spamLastRound >= 20) {
+        spamLastRound = now;
+        spamRound();
     }
-    if (now - beaconLastDraw >= BEACON_REDRAW_MS) {
-        beaconLastDraw = now;
-        drawBeacon();
+    if (now - spamLastDraw >= 1000) {
+        spamLastDraw = now;
+        drawSpamRun();
     }
 }
 
@@ -654,7 +810,7 @@ void loop() {
         pcapFlush(8192);
         tickSniffer();
     }
-    if (screen == Screen::WifiBeacon) tickBeacon();
+    if (screen == Screen::WifiSpamRun) tickSpam();
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
 
     auto &ks = M5Cardputer.Keyboard.keysState();
@@ -710,8 +866,9 @@ void loop() {
                 screen = Screen::WifiSniff;
                 startSniffer();
             } else if (wifiToolSel == WIFI_TOOL_BEACON) {
-                screen = Screen::WifiBeacon;
-                drawBeacon();
+                screen = Screen::WifiSpamSelect;
+                spamMsg[0] = '\0';
+                drawSpamSelect();
             }
         }
         break;
@@ -757,26 +914,91 @@ void loop() {
         }
         break;
 
-    case Screen::WifiBeacon:
+    case Screen::WifiSpamSelect:
         if (back) {
-            stopBeacon();
             screen = Screen::WifiMenu;
             drawWifiMenu();
-        } else if (ks.enter) {
-            if (beaconRunning) {
-                stopBeacon();
-            } else {
-                startBeacon();
-            }
-            drawBeacon();
         } else if (up) {
-            beaconCh = beaconCh <= CH_FIRST ? CH_LAST : beaconCh - 1;
-            setAnalyzerChannel(beaconCh);
-            drawBeacon();
+            spamModeSel = (spamModeSel + SPAM_MODE_COUNT - 1) % SPAM_MODE_COUNT;
+            spamMsg[0] = '\0';
+            drawSpamSelect();
         } else if (down) {
-            beaconCh = beaconCh >= CH_LAST ? CH_FIRST : beaconCh + 1;
-            setAnalyzerChannel(beaconCh);
-            drawBeacon();
+            spamModeSel = (spamModeSel + 1) % SPAM_MODE_COUNT;
+            spamMsg[0] = '\0';
+            drawSpamSelect();
+        } else if (ks.enter) {
+            spamMode = static_cast<SpamMode>(spamModeSel);
+            if (spamMode == SPAM_SINGLE) {
+                spamTextLen = 0;
+                spamText[0] = '\0';
+                screen = Screen::WifiSpamText;
+                drawSpamText();
+            } else if (spamMode == SPAM_CUSTOM && !loadSpamCustom()) {
+                drawSpamSelect();
+            } else {
+                screen = Screen::WifiSpamRun;
+                drawSpamRun();
+            }
+        }
+        break;
+
+    case Screen::WifiSpamText:
+        if (ks.esc) {
+            screen = Screen::WifiSpamSelect;
+            drawSpamSelect();
+        } else if (ks.backspace) {
+            if (spamTextLen > 0) {
+                spamText[--spamTextLen] = '\0';
+                drawSpamText();
+            } else {
+                screen = Screen::WifiSpamSelect;
+                drawSpamSelect();
+            }
+        } else if (ks.enter) {
+            if (spamTextLen > 0) {
+                snprintf(spamBase, sizeof(spamBase), "%s", spamText);
+                spamCounter = 1;
+                screen = Screen::WifiSpamRun;
+                drawSpamRun();
+            }
+        } else {
+            bool changed = false;
+            for (char c : ks.word) {
+                if (spamTextLen < static_cast<int>(SPAM_BASE_MAX) && c >= 32 && c < 127) {
+                    spamText[spamTextLen++] = c;
+                    spamText[spamTextLen] = '\0';
+                    changed = true;
+                }
+            }
+            if (changed) drawSpamText();
+        }
+        break;
+
+    case Screen::WifiSpamRun:
+        if (back) {
+            stopSpam();
+            screen = Screen::WifiSpamSelect;
+            drawSpamSelect();
+        } else if (ks.enter) {
+            if (spamRunning) {
+                stopSpam();
+            } else {
+                startSpam();
+            }
+            drawSpamRun();
+        } else if (wordHas(ks.word, 'h')) {
+            spamHop = !spamHop;
+            drawSpamRun();
+        } else if (up || down) {
+            if (!spamHop) {
+                if (up) {
+                    spamCh = spamCh <= CH_FIRST ? CH_LAST : spamCh - 1;
+                } else {
+                    spamCh = spamCh >= CH_LAST ? CH_FIRST : spamCh + 1;
+                }
+                setAnalyzerChannel(spamCh);
+            }
+            drawSpamRun();
         }
         break;
     }
