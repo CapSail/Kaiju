@@ -1748,6 +1748,12 @@ void rotatePortalCreds(const char *safe) {
     }
 }
 
+// Where the last capture went. Files before that one were full when the capture moved past
+// them, so the next scan starts there instead of re-reading every full file.
+char credsCacheSafe[SPAM_SSID_MAX + 1] = "";
+int credsCacheK = 0;      // 0 = no cache
+int credsCacheLines = 0;  // lines in that file, including the capture written to it
+
 // Picks the file the next capture goes to. When all files are full, the oldest is deleted
 // first, so the newest capture is always saved.
 void portalCredsPath(char *out, size_t n) {
@@ -1758,12 +1764,33 @@ void portalCredsPath(char *out, size_t n) {
         safe[j++] = (isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') ? c : '_';
     }
     safe[j] = '\0';
-    for (int k = 1; k <= PORTAL_CREDS_FILE_MAX; k++) {
-        portalCredsFile(out, n, safe, k);
-        if (!SD.exists(out) || countLines(out) < LOG_MAX_ENTRIES) return;
+    bool cached = credsCacheK > 0 && strcmp(credsCacheSafe, safe) == 0;
+    if (cached && credsCacheLines < LOG_MAX_ENTRIES) {  // same file as last time, not full yet
+        portalCredsFile(out, n, safe, credsCacheK);
+        credsCacheLines++;
+        return;
     }
-    rotatePortalCreds(safe);
-    portalCredsFile(out, n, safe, PORTAL_CREDS_FILE_MAX);
+    int k = cached ? credsCacheK : 1;
+    int lines = 0;
+    for (; k <= PORTAL_CREDS_FILE_MAX; k++) {
+        portalCredsFile(out, n, safe, k);
+        if (!SD.exists(out)) {
+            lines = 0;
+            break;
+        }
+        lines = countLines(out);
+        if (lines < LOG_MAX_ENTRIES) break;
+    }
+    if (k > PORTAL_CREDS_FILE_MAX) {
+        // Every file is full: delete the oldest and use the freed newest slot.
+        rotatePortalCreds(safe);
+        k = PORTAL_CREDS_FILE_MAX;
+        portalCredsFile(out, n, safe, k);
+        lines = 0;
+    }
+    snprintf(credsCacheSafe, sizeof(credsCacheSafe), "%s", safe);
+    credsCacheK = k;
+    credsCacheLines = lines + 1;  // the caller writes one line to this file next
 }
 
 void portalHandlePost() {
@@ -1821,6 +1848,7 @@ void drawPortal() {
 }
 
 void startPortal() {
+    credsCacheK = 0;  // SD contents may have changed while the portal was off
     if (!ensureSd()) {
         snprintf(portalLast, sizeof(portalLast), "no SD card found");
         return;
