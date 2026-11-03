@@ -18,19 +18,18 @@ Build: `python -m platformio run -e cardputer-adv -t upload` from this folder.
 | 10 | Evil portal: open network with the chosen SSID, DNS catches all names, captive redirect. Template: first .html in SD /PortalTemplates, else a plain built-in sign-in page. Each capture is saved to /BruceEvilCreds/<ssid>_creds.csv with session, SSID, channel, uptime, client IP, user agent, and browser time. Viewer: WiFi > Portal creds. No password checking against the real AP | Verified on device (basic run) |
 | 11 | Sniffer alerts: deauth or disassoc frames above 20 in 10 s, and a second access point seen under an already-seen name (possible evil twin). Shown on the sniffer screen | Twin alert verified on device. Deauth alert not yet tested (needs a second device sending deauth) |
 | 12 | Kaijugotchi: scans all networks for 60 s (logs new ones to /kaiju/wardrive.csv), then opens a review list with each network's verdict (VULN, PART, PMF). Press O to mark your own networks. Enter tests only the marked ones, strongest first, with up to two tries each. Saves a PCAP only when a crackable handshake is caught. Failed tests leave no file | Scan and hunt-to-scan cycle verified on device earlier. The review and test flow is not tested yet. Capture not tested: the test phone is 5 GHz only and the Cardputer is 2.4 GHz only |
-| 13 | BLE scan: passive, 6 s per tap, sorted by signal. Tags Apple (FindMy for Find My accessories), Google, and Samsung. Nothing saved to SD. Press D for the passive detector: counts Apple proximity-pairing and Fast Pair ads per 10 s and alerts when 8 or more distinct addresses send the same kind. Alerts are logged to /kaiju/ble_alerts.txt (one line per burst start) | Built, not compiled yet. Not tested on device |
 
 ## Need
 
 | Step | Feature | Notes |
 |---|---|---|
-| 14 | BLE spam and other BLE attacks | Declined. Broadcast BLE reaches every phone in range and cannot be limited to the lab box |
-| 15 | RF 433 MHz (CC1101) listen and spectrum | Port logic from Bruce (AGPL-3). Needs Hydra pin config |
-| 16 | NRF24 2.4 GHz tools | Placeholder today. Hydra pin config |
-| 17 | IR send and read | Placeholder today |
-| 18 | RFID read | Placeholder today. Only tools that work with what's on the Hydra/Cardputer |
-| 19 | Files (SD browser) | Placeholder today |
-| 20 | Settings (brightness, theme) | Placeholder today |
+| 13 | BLE | Not started. Scope not decided |
+| 14 | RF 433 MHz (CC1101) listen and spectrum | Port logic from Bruce (AGPL-3). Needs Hydra pin config |
+| 15 | NRF24 2.4 GHz tools | Placeholder today. Hydra pin config |
+| 16 | IR send and read | Placeholder today |
+| 17 | RFID read | Placeholder today. Only tools that work with what's on the Hydra/Cardputer |
+| 18 | Files (SD browser) | Placeholder today |
+| 19 | Settings (brightness, theme) | Placeholder today |
 
 ## Limits
 
@@ -55,5 +54,3 @@ Build: `python -m platformio run -e cardputer-adv -t upload` from this folder.
 - The 4 MB recording limit.
 - The deauth-flood alert.
 - Kaijugotchi capture, which needs a client on 2.4 GHz.
-- BLE scan on device. NimBLE-Arduino 2.5 was added to the build, so the first compile may surface errors.
-- BLE detector on device. Its alert thresholds are a heuristic and need tuning against real traffic.

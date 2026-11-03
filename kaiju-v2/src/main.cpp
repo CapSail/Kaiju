@@ -9,7 +9,6 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include "esp_wifi.h"
-#include <NimBLEDevice.h>
 
 namespace {
 
@@ -20,7 +19,6 @@ constexpr uint16_t COLOR_BG = TFT_BLACK;
 const char *const MENU_ITEMS[] = {"WiFi", "BLE", "RF 433MHz", "NRF24 2.4GHz", "IR", "RFID", "Files", "Settings"};
 constexpr int MENU_COUNT = sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]);
 constexpr int WIFI_ITEM = 0;
-constexpr int BLE_ITEM = 1;
 
 const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer", "Packet sniffer", "Beacon spam", "Deauth flood", "Karma", "Handshake capture", "Evil portal", "Portal creds", "Kaijugotchi"};
 constexpr int WIFI_TOOL_COUNT = sizeof(WIFI_TOOLS) / sizeof(WIFI_TOOLS[0]);
@@ -42,7 +40,7 @@ constexpr uint32_t CH_DWELL_MS = 300;
 constexpr int BAR_BASE_Y = 108;
 constexpr int BAR_MAX_H = 72;
 
-enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun, WifiHsRun, WifiPortalRun, WifiCredsFiles, WifiCredsView, WifiAutoRun, BleScan };
+enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun, WifiHsRun, WifiPortalRun, WifiCredsFiles, WifiCredsView, WifiAutoRun };
 
 Screen screen = Screen::Menu;
 int selected = 0;
@@ -2578,254 +2576,6 @@ void tickKaijugotchi() {
     }
 }
 
-// ---- BLE scan (passive, active scan, nothing saved) ----
-constexpr int BLE_ROWS_MAX = 24;
-constexpr int BLE_VISIBLE_ROWS = 7;
-constexpr uint32_t BLE_SCAN_MS = 6000;
-
-struct BleRow {
-    char name[13];
-    char mac[18];
-    char tag[10];
-    int rssi;
-};
-BleRow bleRows[BLE_ROWS_MAX];
-int bleCount = 0;
-int bleSel = 0;
-int bleTop = 0;
-bool bleInited = false;
-char bleMsg[40] = "not scanned yet";
-
-const char *bleTagFor(const std::string &manuf) {
-    if (manuf.size() < 3) return "-";
-    const uint8_t *d = reinterpret_cast<const uint8_t *>(manuf.data());
-    uint16_t company = static_cast<uint16_t>(d[0] | (d[1] << 8));
-    if (company == 0x004C) return d[2] == 0x12 ? "FindMy" : "Apple";
-    if (company == 0x00E0) return "Google";
-    if (company == 0x0075) return "Samsung";
-    return "-";
-}
-
-void bleScanNow() {
-    if (!bleInited) {
-        NimBLEDevice::init("Kaiju");
-        bleInited = true;
-    }
-    NimBLEScan *scan = NimBLEDevice::getScan();
-    if (scan == nullptr) {
-        bleCount = 0;
-        snprintf(bleMsg, sizeof(bleMsg), "%s", "BLE not available");
-        return;
-    }
-    scan->setActiveScan(true);
-    scan->setInterval(97);
-    scan->setWindow(67);
-    NimBLEScanResults results = scan->getResults(BLE_SCAN_MS, false);
-    int total = results.getCount();
-    bleCount = 0;
-    for (int i = 0; i < total && bleCount < BLE_ROWS_MAX; i++) {
-        const NimBLEAdvertisedDevice *dev = results.getDevice(i);
-        if (dev == nullptr) continue;
-        BleRow &r = bleRows[bleCount++];
-        std::string nm = dev->getName().c_str();
-        snprintf(r.name, sizeof(r.name), "%s", nm.empty() ? "<no name>" : nm.c_str());
-        std::string addr = dev->getAddress().toString().c_str();
-        snprintf(r.mac, sizeof(r.mac), "%s", addr.c_str());
-        std::string manuf = dev->haveManufacturerData() ? dev->getManufacturerData() : std::string();
-        snprintf(r.tag, sizeof(r.tag), "%s", bleTagFor(manuf));
-        r.rssi = dev->getRSSI();
-    }
-    scan->clearResults();
-    for (int i = 1; i < bleCount; i++) {
-        BleRow tmp = bleRows[i];
-        int j = i - 1;
-        while (j >= 0 && bleRows[j].rssi < tmp.rssi) {
-            bleRows[j + 1] = bleRows[j];
-            j--;
-        }
-        bleRows[j + 1] = tmp;
-    }
-    bleSel = 0;
-    bleTop = 0;
-    if (total > BLE_ROWS_MAX) {
-        snprintf(bleMsg, sizeof(bleMsg), "%d found, showing %d", total, bleCount);
-    } else {
-        snprintf(bleMsg, sizeof(bleMsg), "%d found", bleCount);
-    }
-}
-
-// ---- BLE detector (passive: counts pairing-style ads, nothing transmitted) ----
-constexpr int DET_RING = 256;
-constexpr uint32_t DET_WINDOW_MS = 10000;
-constexpr uint32_t DET_SLICE_MS = 500;
-constexpr int DET_ALERT_ADDRS = 8;
-constexpr uint8_t DET_APPLE = 1;
-constexpr uint8_t DET_FASTPAIR = 2;
-constexpr char BLE_ALERT_PATH[] = "/kaiju/ble_alerts.txt";
-
-struct DetRec {
-    char mac[18];
-    uint32_t t;
-    uint8_t kind;
-    bool used;
-};
-DetRec detRing[DET_RING];
-int detNext = 0;
-bool detOn = false;
-bool detAlert = false;
-int detApple = 0;
-int detFast = 0;
-uint32_t detLastDraw = 0;
-
-uint8_t bleDetKind(const NimBLEAdvertisedDevice *dev) {
-    if (dev->haveManufacturerData()) {
-        std::string m = dev->getManufacturerData();
-        if (m.size() >= 3) {
-            const uint8_t *d = reinterpret_cast<const uint8_t *>(m.data());
-            uint16_t company = static_cast<uint16_t>(d[0] | (d[1] << 8));
-            if (company == 0x004C && d[2] == 0x07) return DET_APPLE;
-        }
-    }
-    if (dev->haveServiceUUID()) {
-        std::string uuid = dev->getServiceUUID().toString();
-        if (uuid.find("fe2c") != std::string::npos) return DET_FASTPAIR;
-    }
-    return 0;
-}
-
-int detDistinct(uint8_t kind, uint32_t now) {
-    int count = 0;
-    for (int i = 0; i < DET_RING; i++) {
-        const DetRec &a = detRing[i];
-        if (!a.used || a.kind != kind || now - a.t > DET_WINDOW_MS) continue;
-        bool seen = false;
-        for (int j = 0; j < i && !seen; j++) {
-            const DetRec &b = detRing[j];
-            if (b.used && b.kind == kind && now - b.t <= DET_WINDOW_MS && strcmp(a.mac, b.mac) == 0) seen = true;
-        }
-        if (!seen) count++;
-    }
-    return count;
-}
-
-void startBleDetector() {
-    if (!bleInited) {
-        NimBLEDevice::init("Kaiju");
-        bleInited = true;
-    }
-    NimBLEScan *scan = NimBLEDevice::getScan();
-    if (scan == nullptr) {
-        snprintf(bleMsg, sizeof(bleMsg), "%s", "BLE not available");
-        return;
-    }
-    scan->setActiveScan(false);
-    scan->setDuplicateFilter(false);
-    for (auto &r : detRing) r.used = false;
-    detNext = 0;
-    detAlert = false;
-    detApple = 0;
-    detFast = 0;
-    detOn = true;
-    snprintf(bleMsg, sizeof(bleMsg), "%s", "detector on");
-}
-
-void stopBleDetector() {
-    if (!detOn) return;
-    detOn = false;
-    NimBLEScan *scan = NimBLEDevice::getScan();
-    if (scan != nullptr) {
-        scan->stop();
-        scan->clearResults();
-    }
-    snprintf(bleMsg, sizeof(bleMsg), "%s", "detector off");
-}
-
-void drawBleDetector() {
-    auto &d = M5Cardputer.Display;
-    d.fillScreen(COLOR_BG);
-    d.setTextSize(1);
-    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
-    d.drawString("BLE detector (passive)", 4, 4);
-    char line[48];
-    snprintf(line, sizeof(line), "Apple proximity: %d in 10 s", detApple);
-    d.drawString(line, 4, 24);
-    snprintf(line, sizeof(line), "Fast Pair: %d in 10 s", detFast);
-    d.drawString(line, 4, 36);
-    d.setTextColor(detAlert ? COLOR_PRIMARY : COLOR_SECONDARY, COLOR_BG);
-    d.drawString(detAlert ? "ALERT: burst of pairing ads" : "quiet", 4, 56);
-    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
-    d.drawString("Bursts logged: /kaiju/ble_alerts.txt", 4, 90);
-    d.drawString("D: stop detector   Bksp back", 4, 124);
-}
-
-void drawBleScan() {
-    if (detOn) {
-        drawBleDetector();
-        return;
-    }
-    auto &d = M5Cardputer.Display;
-    d.fillScreen(COLOR_BG);
-    d.setTextSize(1);
-    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
-    d.drawString("BLE scan", 4, 4);
-    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
-    d.drawString(bleMsg, 4, 16);
-    if (bleCount == 0) {
-        d.drawString("Enter: scan 6 s", 4, 30);
-    }
-    for (int row = 0; row < BLE_VISIBLE_ROWS; row++) {
-        int idx = bleTop + row;
-        if (idx >= bleCount) break;
-        const BleRow &r = bleRows[idx];
-        const char *tail = strlen(r.mac) > 9 ? r.mac + 9 : r.mac;
-        char line[48];
-        snprintf(line, sizeof(line), "%c%-11.11s %-7.7s %4d %s", idx == bleSel ? '>' : ' ', r.name, r.tag, r.rssi, tail);
-        d.setTextColor(COLOR_PRIMARY, COLOR_BG);
-        d.drawString(line, 4, 30 + row * 12);
-    }
-    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
-    d.drawString("Enter scan  ; . move  Bksp back", 4, 124);
-}
-
-void tickBleDetector() {
-    NimBLEScan *scan = NimBLEDevice::getScan();
-    if (scan == nullptr) {
-        stopBleDetector();
-        return;
-    }
-    NimBLEScanResults results = scan->getResults(DET_SLICE_MS, true);
-    for (int i = 0; i < results.getCount(); i++) {
-        const NimBLEAdvertisedDevice *dev = results.getDevice(i);
-        if (dev == nullptr) continue;
-        uint8_t kind = bleDetKind(dev);
-        if (kind == 0) continue;
-        DetRec &r = detRing[detNext];
-        detNext = (detNext + 1) % DET_RING;
-        std::string addr = dev->getAddress().toString().c_str();
-        snprintf(r.mac, sizeof(r.mac), "%s", addr.c_str());
-        r.t = millis();
-        r.kind = kind;
-        r.used = true;
-    }
-    scan->clearResults();
-    uint32_t now = millis();
-    detApple = detDistinct(DET_APPLE, now);
-    detFast = detDistinct(DET_FASTPAIR, now);
-    bool alert = detApple >= DET_ALERT_ADDRS || detFast >= DET_ALERT_ADDRS;
-    if (alert && !detAlert) {
-        int peak = detApple >= detFast ? detApple : detFast;
-        String line = String(static_cast<int>(now / 60000)) + "m, " +
-                      (detApple >= DET_ALERT_ADDRS ? "proximity-pairing" : "fast-pair") + " burst, " +
-                      String(peak) + " addresses in 10 s";
-        appendCapped(BLE_ALERT_PATH, line);
-    }
-    detAlert = alert;
-    if (now - detLastDraw >= 1000) {
-        detLastDraw = now;
-        drawBleScan();
-    }
-}
-
 bool wordHas(const std::vector<char> &word, char c) {
     for (char w : word) {
         if (tolower(w) == c) return true;
@@ -2866,7 +2616,6 @@ void loop() {
     }
     if (screen == Screen::WifiPortalRun) tickPortal();
     if (screen == Screen::WifiAutoRun) tickKaijugotchi();
-    if (screen == Screen::BleScan && detOn) tickBleDetector();
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
 
     auto &ks = M5Cardputer.Keyboard.keysState();
@@ -2888,11 +2637,6 @@ void loop() {
                 wifiToolSel = 0;
                 wifiToolTop = 0;
                 drawWifiMenu();
-            } else if (selected == BLE_ITEM) {
-                screen = Screen::BleScan;
-                bleSel = 0;
-                bleTop = 0;
-                drawBleScan();
             } else {
                 screen = Screen::Placeholder;
                 drawPlaceholder();
@@ -3286,33 +3030,6 @@ void loop() {
                 startKaijugotchi();
             }
             drawKaijugotchi();
-        }
-        break;
-    case Screen::BleScan:
-        if (back) {
-            stopBleDetector();
-            screen = Screen::Menu;
-            drawMenu();
-        } else if (wordHas(ks.word, 'd')) {
-            if (detOn) {
-                stopBleDetector();
-            } else {
-                startBleDetector();
-            }
-            drawBleScan();
-        } else if (!detOn && up) {
-            if (bleSel > 0) bleSel--;
-            if (bleSel < bleTop) bleTop = bleSel;
-            drawBleScan();
-        } else if (!detOn && down) {
-            if (bleSel + 1 < bleCount) bleSel++;
-            if (bleSel >= bleTop + BLE_VISIBLE_ROWS) bleTop = bleSel - BLE_VISIBLE_ROWS + 1;
-            drawBleScan();
-        } else if (!detOn && ks.enter) {
-            snprintf(bleMsg, sizeof(bleMsg), "%s", "scanning 6 s...");
-            drawBleScan();
-            bleScanNow();
-            drawBleScan();
         }
         break;
     }

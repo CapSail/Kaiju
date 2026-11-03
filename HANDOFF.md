@@ -25,7 +25,7 @@ Kaiju is an upgraded Bruce firmware for the M5Stack Cardputer ADV, paired with a
 - PlatformIO Core 6.1.19 or newer. pioarduino needs it.
 - Serial port: COM7.
 - **Bruce (root):** `python -m platformio run -e m5stack-cardputer -t upload`. The root `platformio.ini` pins the upstream pioarduino platform and libs tarball, and FastLED 3.10.3. FastLED 3.10.4 and newer fail on `FP` because of `-DFP=1`. `patch.py` calls `python -m platformio pkg exec`.
-- **Kaiju v2:** from `kaiju-v2/`, run `python -m platformio run -e cardputer-adv -t upload`. Its `platformio.ini` sets `boards_dir = ../boards/_boards_json` under `[platformio]`, `board_build.variants_dir = variants`, and uses its own `variants/m5stack-cardputer/pins_arduino.h` with no keyboard table and no `KEY_OPT`. Libraries: M5Cardputer at commit `bf64d3178ab43928fa02365fbe3937cec99716ad`, and NimBLE-Arduino 2.5.
+- **Kaiju v2:** from `kaiju-v2/`, run `python -m platformio run -e cardputer-adv -t upload`. Its `platformio.ini` sets `boards_dir = ../boards/_boards_json` under `[platformio]`, `board_build.variants_dir = variants`, and uses its own `variants/m5stack-cardputer/pins_arduino.h` with no keyboard table and no `KEY_OPT`. Library: M5Cardputer at commit `bf64d3178ab43928fa02365fbe3937cec99716ad`.
 - **Sandbox note:** in the cloud session, PlatformIO could not download framework packages. TLS verification fails through the proxy, and `REQUESTS_CA_BUNDLE` was not honored. Compile on the owner's PC.
 
 ## Hardware
@@ -64,8 +64,6 @@ Last device-tested build: commit `2159712e`.
 ## Built but not yet compiled or tested
 
 - `974ab2bb`: Kaijugotchi review and test flow. It scans all networks for 60 seconds and shows a review list with each network's verdict. `O` marks the owner's networks, and Enter tests the marked ones, strongest first, with two tries each. PMF networks are skipped. Failed tests leave no PCAP and no log line.
-- `de50ede4`: the BLE scan screen (passive). NimBLE-Arduino 2.5 is added to the build.
-- `c836d3c6`: a BLE detector on the BLE screen, opened with `D`. The owner has said they don't want it. Keep it or revert it before the next build.
 
 ## Still needs a test
 
@@ -78,7 +76,6 @@ Last device-tested build: commit `2159712e`.
 - The 4 MB recording limit.
 - The deauth-flood alert.
 - Opening a sniffer PCAP in Wireshark.
-- The BLE scan screen: compile and test on device.
 
 ## Kaiju v1 (Bruce fork): state
 
@@ -93,8 +90,10 @@ Last device-tested build: commit `2159712e`.
 
 1. Attach `CapSail/Kaiju` on branch `ccr-797e4c88-p1o4x6`.
 2. Read `HANDOFF.md` and `kaiju-v2/STATUS.md`.
-3. Decide with the owner whether to keep or revert `c836d3c6`.
-4. Decide with the owner whether to keep `19_social_engineering_generator.js` in `scripts/`.
-5. Compile and flash `kaiju-v2` at HEAD on the owner's PC. If the build fails, paste the first error.
-6. Work through the "Still needs a test" list.
-7. Decide the BLE scope with the owner. It has not been decided.
+3. Decide with the owner whether to keep `19_social_engineering_generator.js` in `scripts/`.
+4. Compile and flash `kaiju-v2` at HEAD on the owner's PC. If the build fails, paste the first error.
+5. Work through the "Still needs a test" list.
+
+## Not started
+
+- BLE: nothing in Kaiju v2. The scope has not been decided.
