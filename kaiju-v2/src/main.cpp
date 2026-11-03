@@ -1,6 +1,9 @@
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <M5Cardputer.h>
+#include <SD.h>
+#include <SPI.h>
 #include <WiFi.h>
 #include "esp_wifi.h"
 
@@ -284,8 +287,134 @@ uint32_t sniffRateStart = 0;
 uint32_t sniffLastTotal = 0;
 uint32_t sniffRate = 0;
 
+constexpr int SD_SCK_PIN = 40;
+constexpr int SD_MISO_PIN = 39;
+constexpr int SD_MOSI_PIN = 14;
+constexpr int SD_CS_PIN = 12;
+constexpr uint32_t PCAP_SNAPLEN = 256;
+constexpr uint32_t PCAP_RING_SIZE = 32768;
+constexpr uint32_t PCAP_RECORD_HDR = 16;
+constexpr uint32_t PCAP_CHUNK = 512;
+constexpr uint32_t PCAP_LINKTYPE_IEEE802_11 = 105;
+
+uint8_t pcapRing[PCAP_RING_SIZE];
+std::atomic<uint32_t> pcapHead{0};
+std::atomic<uint32_t> pcapTail{0};
+std::atomic<uint32_t> pcapDropped{0};
+std::atomic<bool> pcapActive{false};
+File pcapFile;
+bool pcapOpen = false;
+bool sdReady = false;
+uint32_t pcapBytes = 0;
+char pcapName[40] = "";
+char pcapMsg[40] = "R: record to SD";
+
+void pcapPutLe32(uint8_t *dst, uint32_t v) {
+    dst[0] = v & 0xFF;
+    dst[1] = (v >> 8) & 0xFF;
+    dst[2] = (v >> 16) & 0xFF;
+    dst[3] = (v >> 24) & 0xFF;
+}
+
+void pcapRingWrite(uint32_t pos, const uint8_t *src, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+        pcapRing[(pos + i) & (PCAP_RING_SIZE - 1)] = src[i];
+    }
+}
+
+void pcapEnqueue(const wifi_promiscuous_pkt_t *pkt) {
+    uint32_t origLen = pkt->rx_ctrl.sig_len;
+    uint32_t capLen = origLen < PCAP_SNAPLEN ? origLen : PCAP_SNAPLEN;
+    uint32_t need = PCAP_RECORD_HDR + capLen;
+    uint32_t head = pcapHead.load(std::memory_order_relaxed);
+    uint32_t tail = pcapTail.load(std::memory_order_acquire);
+    if (PCAP_RING_SIZE - (head - tail) < need) {
+        pcapDropped.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    uint32_t us = micros();
+    uint8_t hdr[PCAP_RECORD_HDR];
+    pcapPutLe32(hdr, us / 1000000);
+    pcapPutLe32(hdr + 4, us % 1000000);
+    pcapPutLe32(hdr + 8, capLen);
+    pcapPutLe32(hdr + 12, origLen);
+    pcapRingWrite(head, hdr, PCAP_RECORD_HDR);
+    pcapRingWrite(head + PCAP_RECORD_HDR, pkt->payload, capLen);
+    pcapHead.store(head + need, std::memory_order_release);
+}
+
+void pcapFlush(uint32_t budget) {
+    if (!pcapOpen) return;
+    uint32_t tail = pcapTail.load(std::memory_order_relaxed);
+    uint32_t avail = pcapHead.load(std::memory_order_acquire) - tail;
+    uint8_t chunk[PCAP_CHUNK];
+    while (avail > 0 && budget > 0) {
+        uint32_t n = avail < PCAP_CHUNK ? avail : PCAP_CHUNK;
+        if (n > budget) n = budget;
+        for (uint32_t i = 0; i < n; i++) {
+            chunk[i] = pcapRing[(tail + i) & (PCAP_RING_SIZE - 1)];
+        }
+        pcapFile.write(chunk, n);
+        tail += n;
+        avail -= n;
+        budget -= n;
+        pcapBytes += n;
+    }
+    pcapTail.store(tail, std::memory_order_release);
+}
+
+void startPcap() {
+    if (!sdReady) {
+        SPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
+        sdReady = SD.begin(SD_CS_PIN, SPI, 25000000);
+    }
+    if (!sdReady) {
+        snprintf(pcapMsg, sizeof(pcapMsg), "no SD card found");
+        return;
+    }
+    if (!SD.exists("/pcap")) SD.mkdir("/pcap");
+    snprintf(pcapName, sizeof(pcapName), "kaiju_%lu.pcap", (unsigned long)(millis() / 1000));
+    char path[64];
+    snprintf(path, sizeof(path), "/pcap/%s", pcapName);
+    pcapFile = SD.open(path, FILE_WRITE);
+    if (!pcapFile) {
+        snprintf(pcapMsg, sizeof(pcapMsg), "could not open file");
+        return;
+    }
+    uint8_t globalHdr[24] = {0xD4, 0xC3, 0xB2, 0xA1, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    pcapPutLe32(globalHdr + 16, PCAP_SNAPLEN);
+    pcapPutLe32(globalHdr + 20, PCAP_LINKTYPE_IEEE802_11);
+    pcapFile.write(globalHdr, sizeof(globalHdr));
+    pcapBytes = sizeof(globalHdr);
+    pcapTail.store(pcapHead.load(std::memory_order_acquire), std::memory_order_release);
+    pcapDropped.store(0, std::memory_order_relaxed);
+    pcapOpen = true;
+    pcapActive.store(true, std::memory_order_release);
+}
+
+void stopPcap() {
+    if (!pcapActive.load(std::memory_order_acquire)) return;
+    pcapActive.store(false, std::memory_order_release);
+    delay(5);
+    pcapFlush(0xFFFFFFFFu);
+    pcapFile.close();
+    pcapOpen = false;
+    snprintf(pcapMsg, sizeof(pcapMsg), "saved %lu KB", (unsigned long)(pcapBytes / 1024));
+}
+
+void toggleRecording() {
+    if (pcapActive.load(std::memory_order_acquire)) {
+        stopPcap();
+    } else {
+        startPcap();
+    }
+}
+
 void onSniff(void *buf, wifi_promiscuous_pkt_type_t type) {
     sniffLive[SNIFF_TOTAL]++;
+    if (type != WIFI_PKT_MISC && pcapActive.load(std::memory_order_acquire)) {
+        pcapEnqueue(static_cast<wifi_promiscuous_pkt_t *>(buf));
+    }
     if (type == WIFI_PKT_CTRL) {
         sniffLive[SNIFF_CTRL]++;
         return;
@@ -333,8 +462,18 @@ void drawSniffer() {
     snprintf(line, sizeof(line), "Deauth %lu  Disassoc %lu", (unsigned long)sniffShown[SNIFF_DEAUTH],
              (unsigned long)sniffShown[SNIFF_DISASSOC]);
     d.drawString(line, 4, 66);
+    if (pcapActive.load(std::memory_order_acquire)) {
+        snprintf(line, sizeof(line), "REC %s", pcapName);
+        d.drawString(line, 4, 80);
+        snprintf(line, sizeof(line), "%lu KB  drops %lu", (unsigned long)(pcapBytes / 1024),
+                 (unsigned long)pcapDropped.load(std::memory_order_relaxed));
+        d.drawString(line, 4, 92);
+    } else {
+        d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+        d.drawString(pcapMsg, 4, 80);
+    }
     d.setTextColor(COLOR_SECONDARY, COLOR_BG);
-    d.drawString("Enter hop/lock  ;. ch  Bksp back", 4, 124);
+    d.drawString("Enter hop/lock  R rec  Bksp back", 4, 124);
 }
 
 void startSniffer() {
@@ -359,6 +498,7 @@ void startSniffer() {
 }
 
 void stopSniffer() {
+    stopPcap();
     esp_wifi_set_promiscuous(false);
 }
 
@@ -409,7 +549,10 @@ void setup() {
 void loop() {
     M5Cardputer.update();
     if (screen == Screen::WifiChannels) tickChannelAnalyzer();
-    if (screen == Screen::WifiSniff) tickSniffer();
+    if (screen == Screen::WifiSniff) {
+        pcapFlush(8192);
+        tickSniffer();
+    }
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
 
     auto &ks = M5Cardputer.Keyboard.keysState();
@@ -498,6 +641,9 @@ void loop() {
         } else if (ks.enter) {
             sniffHop = !sniffHop;
             sniffDwellStart = millis();
+            drawSniffer();
+        } else if (wordHas(ks.word, 'r')) {
+            toggleRecording();
             drawSniffer();
         } else if (up) {
             moveSnifferChannel(-1);
