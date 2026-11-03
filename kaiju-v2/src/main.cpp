@@ -2654,7 +2654,115 @@ void bleScanNow() {
     }
 }
 
+// ---- BLE detector (passive: counts pairing-style ads, nothing transmitted) ----
+constexpr int DET_RING = 256;
+constexpr uint32_t DET_WINDOW_MS = 10000;
+constexpr uint32_t DET_SLICE_MS = 500;
+constexpr int DET_ALERT_ADDRS = 8;
+constexpr uint8_t DET_APPLE = 1;
+constexpr uint8_t DET_FASTPAIR = 2;
+constexpr char BLE_ALERT_PATH[] = "/kaiju/ble_alerts.txt";
+
+struct DetRec {
+    char mac[18];
+    uint32_t t;
+    uint8_t kind;
+    bool used;
+};
+DetRec detRing[DET_RING];
+int detNext = 0;
+bool detOn = false;
+bool detAlert = false;
+int detApple = 0;
+int detFast = 0;
+uint32_t detLastDraw = 0;
+
+uint8_t bleDetKind(const NimBLEAdvertisedDevice *dev) {
+    if (dev->haveManufacturerData()) {
+        std::string m = dev->getManufacturerData();
+        if (m.size() >= 3) {
+            const uint8_t *d = reinterpret_cast<const uint8_t *>(m.data());
+            uint16_t company = static_cast<uint16_t>(d[0] | (d[1] << 8));
+            if (company == 0x004C && d[2] == 0x07) return DET_APPLE;
+        }
+    }
+    if (dev->haveServiceUUID()) {
+        std::string uuid = dev->getServiceUUID().toString();
+        if (uuid.find("fe2c") != std::string::npos) return DET_FASTPAIR;
+    }
+    return 0;
+}
+
+int detDistinct(uint8_t kind, uint32_t now) {
+    int count = 0;
+    for (int i = 0; i < DET_RING; i++) {
+        const DetRec &a = detRing[i];
+        if (!a.used || a.kind != kind || now - a.t > DET_WINDOW_MS) continue;
+        bool seen = false;
+        for (int j = 0; j < i && !seen; j++) {
+            const DetRec &b = detRing[j];
+            if (b.used && b.kind == kind && now - b.t <= DET_WINDOW_MS && strcmp(a.mac, b.mac) == 0) seen = true;
+        }
+        if (!seen) count++;
+    }
+    return count;
+}
+
+void startBleDetector() {
+    if (!bleInited) {
+        NimBLEDevice::init("Kaiju");
+        bleInited = true;
+    }
+    NimBLEScan *scan = NimBLEDevice::getScan();
+    if (scan == nullptr) {
+        snprintf(bleMsg, sizeof(bleMsg), "%s", "BLE not available");
+        return;
+    }
+    scan->setActiveScan(false);
+    scan->setDuplicateFilter(false);
+    for (auto &r : detRing) r.used = false;
+    detNext = 0;
+    detAlert = false;
+    detApple = 0;
+    detFast = 0;
+    detOn = true;
+    snprintf(bleMsg, sizeof(bleMsg), "%s", "detector on");
+}
+
+void stopBleDetector() {
+    if (!detOn) return;
+    detOn = false;
+    NimBLEScan *scan = NimBLEDevice::getScan();
+    if (scan != nullptr) {
+        scan->stop();
+        scan->clearResults();
+    }
+    snprintf(bleMsg, sizeof(bleMsg), "%s", "detector off");
+}
+
+void drawBleDetector() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    d.drawString("BLE detector (passive)", 4, 4);
+    char line[48];
+    snprintf(line, sizeof(line), "Apple proximity: %d in 10 s", detApple);
+    d.drawString(line, 4, 24);
+    snprintf(line, sizeof(line), "Fast Pair: %d in 10 s", detFast);
+    d.drawString(line, 4, 36);
+    d.setTextColor(detAlert ? COLOR_PRIMARY : COLOR_SECONDARY, COLOR_BG);
+    d.drawString(detAlert ? "ALERT: burst of pairing ads" : "quiet", 4, 56);
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString("Bursts logged: /kaiju/ble_alerts.txt", 4, 90);
+    d.drawString("D: stop detector   Bksp back", 4, 124);
+}
+
 void drawBleScan() {
+    if (detOn) {
+        drawBleDetector();
+        return;
+    }
     auto &d = M5Cardputer.Display;
     d.fillScreen(COLOR_BG);
     d.setTextSize(1);
@@ -2677,6 +2785,45 @@ void drawBleScan() {
     }
     d.setTextColor(COLOR_SECONDARY, COLOR_BG);
     d.drawString("Enter scan  ; . move  Bksp back", 4, 124);
+}
+
+void tickBleDetector() {
+    NimBLEScan *scan = NimBLEDevice::getScan();
+    if (scan == nullptr) {
+        stopBleDetector();
+        return;
+    }
+    NimBLEScanResults results = scan->getResults(DET_SLICE_MS, true);
+    for (int i = 0; i < results.getCount(); i++) {
+        const NimBLEAdvertisedDevice *dev = results.getDevice(i);
+        if (dev == nullptr) continue;
+        uint8_t kind = bleDetKind(dev);
+        if (kind == 0) continue;
+        DetRec &r = detRing[detNext];
+        detNext = (detNext + 1) % DET_RING;
+        std::string addr = dev->getAddress().toString().c_str();
+        snprintf(r.mac, sizeof(r.mac), "%s", addr.c_str());
+        r.t = millis();
+        r.kind = kind;
+        r.used = true;
+    }
+    scan->clearResults();
+    uint32_t now = millis();
+    detApple = detDistinct(DET_APPLE, now);
+    detFast = detDistinct(DET_FASTPAIR, now);
+    bool alert = detApple >= DET_ALERT_ADDRS || detFast >= DET_ALERT_ADDRS;
+    if (alert && !detAlert) {
+        int peak = detApple >= detFast ? detApple : detFast;
+        String line = String(static_cast<int>(now / 60000)) + "m, " +
+                      (detApple >= DET_ALERT_ADDRS ? "proximity-pairing" : "fast-pair") + " burst, " +
+                      String(peak) + " addresses in 10 s";
+        appendCapped(BLE_ALERT_PATH, line);
+    }
+    detAlert = alert;
+    if (now - detLastDraw >= 1000) {
+        detLastDraw = now;
+        drawBleScan();
+    }
 }
 
 bool wordHas(const std::vector<char> &word, char c) {
@@ -2719,6 +2866,7 @@ void loop() {
     }
     if (screen == Screen::WifiPortalRun) tickPortal();
     if (screen == Screen::WifiAutoRun) tickKaijugotchi();
+    if (screen == Screen::BleScan && detOn) tickBleDetector();
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
 
     auto &ks = M5Cardputer.Keyboard.keysState();
@@ -3142,17 +3290,25 @@ void loop() {
         break;
     case Screen::BleScan:
         if (back) {
+            stopBleDetector();
             screen = Screen::Menu;
             drawMenu();
-        } else if (up) {
+        } else if (wordHas(ks.word, 'd')) {
+            if (detOn) {
+                stopBleDetector();
+            } else {
+                startBleDetector();
+            }
+            drawBleScan();
+        } else if (!detOn && up) {
             if (bleSel > 0) bleSel--;
             if (bleSel < bleTop) bleTop = bleSel;
             drawBleScan();
-        } else if (down) {
+        } else if (!detOn && down) {
             if (bleSel + 1 < bleCount) bleSel++;
             if (bleSel >= bleTop + BLE_VISIBLE_ROWS) bleTop = bleSel - BLE_VISIBLE_ROWS + 1;
             drawBleScan();
-        } else if (ks.enter) {
+        } else if (!detOn && ks.enter) {
             snprintf(bleMsg, sizeof(bleMsg), "%s", "scanning 6 s...");
             drawBleScan();
             bleScanNow();
