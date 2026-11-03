@@ -64,6 +64,7 @@ Last device-tested build: commit `2159712e`.
 ## Built but not yet compiled or tested
 
 - `974ab2bb`: Kaijugotchi review and test flow. It scans all networks for 60 seconds and shows a review list with each network's verdict. `O` marks the owner's networks, and Enter tests the marked ones, strongest first, with two tries each. PMF networks are skipped. Failed tests leave no PCAP and no log line.
+- Kaijugotchi fixes from the pre-flash review: an aborted hunt counts as a try, the ring is drained during hunts and only frames that reach the file are counted, and a failed log rotation keeps the original log. Not compiled or tested.
 
 ## Still needs a test
 

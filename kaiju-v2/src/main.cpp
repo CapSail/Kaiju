@@ -336,7 +336,7 @@ void pcapRingWrite(uint32_t pos, const uint8_t *src, uint32_t n) {
     }
 }
 
-void pcapEnqueue(const wifi_promiscuous_pkt_t *pkt) {
+bool pcapEnqueue(const wifi_promiscuous_pkt_t *pkt) {
     uint32_t origLen = pkt->rx_ctrl.sig_len;
     uint32_t capLen = origLen < PCAP_SNAPLEN ? origLen : PCAP_SNAPLEN;
     uint32_t need = PCAP_RECORD_HDR + capLen;
@@ -344,7 +344,7 @@ void pcapEnqueue(const wifi_promiscuous_pkt_t *pkt) {
     uint32_t tail = pcapTail.load(std::memory_order_acquire);
     if (PCAP_RING_SIZE - (head - tail) < need) {
         pcapDropped.fetch_add(1, std::memory_order_relaxed);
-        return;
+        return false;
     }
     uint32_t us = micros();
     uint8_t hdr[PCAP_RECORD_HDR];
@@ -355,6 +355,7 @@ void pcapEnqueue(const wifi_promiscuous_pkt_t *pkt) {
     pcapRingWrite(head, hdr, PCAP_RECORD_HDR);
     pcapRingWrite(head + PCAP_RECORD_HDR, pkt->payload, capLen);
     pcapHead.store(head + need, std::memory_order_release);
+    return true;
 }
 
 void pcapFlush(uint32_t budget) {
@@ -1461,8 +1462,9 @@ void onHandshake(void *buf, wifi_promiscuous_pkt_type_t type) {
     if (type == WIFI_PKT_MGMT) {
         if (((p[0] >> 4) & 0xF) != 0x8) return;
         if (memcmp(&p[16], deauthBssid, 6) != 0) return;
-        if (hsBeaconSaved.exchange(true, std::memory_order_relaxed)) return;
-        pcapEnqueue(pkt);
+        if (hsBeaconSaved.load(std::memory_order_relaxed)) return;
+        if (!pcapEnqueue(pkt)) return;  // ring full: beacon not kept, so try the next one
+        hsBeaconSaved.store(true, std::memory_order_relaxed);
         return;
     }
     if (type != WIFI_PKT_DATA) return;
@@ -1479,8 +1481,8 @@ void onHandshake(void *buf, wifi_promiscuous_pkt_type_t type) {
     if (memcmp(&p[hdr], EAPOL_LLC, 8) != 0) return;
     hsEapolTotal.fetch_add(1, std::memory_order_relaxed);
     int msg = eapolMessageNumber(static_cast<uint16_t>((p[hdr + 13] << 8) | p[hdr + 14]));
+    if (!pcapEnqueue(pkt)) return;  // ring full: frame not kept, so don't count it
     if (msg > 0) hsMsgCount[msg].fetch_add(1, std::memory_order_relaxed);
-    pcapEnqueue(pkt);
 }
 
 void drawHandshake() {
@@ -1682,22 +1684,32 @@ void appendCapped(const char *path, const String &line) {
         if (SD.exists(tmp)) SD.remove(tmp);
         File src = SD.open(path, FILE_READ);
         File dst = SD.open(tmp, FILE_WRITE);
+        bool copied = false;
         if (src && dst) {
             int toSkip = lines - (LOG_MAX_ENTRIES - 1);
             int seen = 0;
+            copied = true;
             while (src.available()) {
                 int c = src.read();
                 if (seen < toSkip) {
                     if (c == '\n') seen++;
                     continue;
                 }
-                dst.write(static_cast<uint8_t>(c));
+                if (dst.write(static_cast<uint8_t>(c)) != 1) {
+                    copied = false;  // SD full mid-copy
+                    break;
+                }
             }
         }
         src.close();
         dst.close();
-        SD.remove(path);
-        SD.rename(tmp, path);
+        if (copied) {
+            SD.remove(path);
+            SD.rename(tmp, path);
+        } else {
+            // Copy failed (SD full or unreadable): keep the original log, drop the partial copy.
+            if (SD.exists(tmp)) SD.remove(tmp);
+        }
     }
     File f = SD.open(path, FILE_APPEND);
     if (f) {
@@ -2433,6 +2445,7 @@ void stopKaijugotchi() {
         delay(20);
         stopPcap();
         if (SD.exists(path)) SD.remove(path);
+        if (autoTarget >= 0) apTable[autoTarget].tries++;  // an aborted hunt counts as a try
     } else if (autoStage == AutoStage::SCOUT) {
         stopAutoRadio();
     }
@@ -2615,7 +2628,10 @@ void loop() {
         tickHandshake();
     }
     if (screen == Screen::WifiPortalRun) tickPortal();
-    if (screen == Screen::WifiAutoRun) tickKaijugotchi();
+    if (screen == Screen::WifiAutoRun) {
+        pcapFlush(8192);
+        tickKaijugotchi();
+    }
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
 
     auto &ks = M5Cardputer.Keyboard.keysState();
