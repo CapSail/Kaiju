@@ -291,7 +291,7 @@ enum SniffCounter : uint8_t {
     SNIFF_COUNT
 };
 
-volatile uint32_t sniffLive[SNIFF_COUNT] = {};
+std::atomic<uint32_t> sniffLive[SNIFF_COUNT] = {};
 uint32_t sniffShown[SNIFF_COUNT] = {};
 bool sniffHop = true;
 int sniffCh = CH_FIRST;
@@ -427,16 +427,17 @@ void toggleRecording() {
     }
 }
 
+constexpr size_t BEACON_SSID_MAX = 32;
 constexpr int BEACON_SEEN_MAX = 48;
 constexpr uint32_t SNIFF_DEAUTH_ALERT = 20;
 struct BeaconSeen {
     uint8_t bssid[6];
-    char ssid[SPAM_SSID_MAX + 1];
+    char ssid[BEACON_SSID_MAX + 1];
 };
 BeaconSeen beaconSeen[BEACON_SEEN_MAX];
 std::atomic<int> beaconSeenCount{0};
 std::atomic<bool> twinAlert{false};
-char twinSsid[SPAM_SSID_MAX + 1] = "";
+char twinSsid[BEACON_SSID_MAX + 1] = "";
 uint32_t sniffDeauthPrev = 0;
 uint32_t sniffDeauthHist[10] = {};
 int sniffDeauthIdx = 0;
@@ -455,8 +456,8 @@ void noteBeacon(const wifi_promiscuous_pkt_t *pkt, uint32_t len) {
     uint32_t q = 36;
     if (q + 2 > end || pkt->payload[q] != 0) return;
     uint32_t n = pkt->payload[q + 1];
-    if (n == 0 || n > SPAM_SSID_MAX || q + 2 + n > end) return;
-    char ssid[SPAM_SSID_MAX + 1];
+    if (n == 0 || n > BEACON_SSID_MAX || q + 2 + n > end) return;
+    char ssid[BEACON_SSID_MAX + 1];
     memcpy(ssid, &pkt->payload[q + 2], n);
     ssid[n] = '\0';
     for (int i = 0; i < count; i++) {
