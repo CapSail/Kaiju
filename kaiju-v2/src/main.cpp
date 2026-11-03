@@ -2868,7 +2868,7 @@ void loop() {
             if (dlCount > 0) startPmfPass();
         } else if (wordHas(ks.word, 'o')) {
             if (dlCount > 0) {
-                toggleOwn(dlSel);
+                toggleOwnBssid(dlBssid[dlSel]);
                 drawDeauthSelect();
             }
         } else if (ks.enter) {
