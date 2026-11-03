@@ -10,7 +10,7 @@ Build: `python -m platformio run -e cardputer-adv -t upload` from this folder.
 | 2 | WiFi scan (SSID, dBm, channel) | Verified on device |
 | 3 | WiFi tools menu, channel analyzer (passive, 13 channels, beacon counts) | Verified on device |
 | 4 | Packet sniffer: live counts by frame type, hop or lock channel | Verified on device |
-| 5 | Sniffer recording to SD as PCAP (Wireshark-readable, 256-byte snaplen) | Built, awaiting device test |
+| 5 | Sniffer recording to SD as PCAP (256-byte snaplen) | Verified on device: records and saves. Wireshark open not yet confirmed |
 
 ## Need
 
