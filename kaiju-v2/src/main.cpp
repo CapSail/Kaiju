@@ -1393,6 +1393,7 @@ void tickKarma() {
 constexpr uint8_t EAPOL_LLC[8] = {0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x88, 0x8E};
 std::atomic<uint32_t> hsMsgCount[5] = {};
 std::atomic<uint32_t> hsEapolTotal{0};
+std::atomic<uint32_t> hsDataSeen{0};
 std::atomic<bool> hsBeaconSaved{false};
 bool hsRunning = false;
 bool hsDeauth = false;
@@ -1425,16 +1426,17 @@ void onHandshake(void *buf, wifi_promiscuous_pkt_type_t type) {
         return;
     }
     if (type != WIFI_PKT_DATA) return;
+    if (memcmp(&p[4], deauthBssid, 6) != 0 && memcmp(&p[10], deauthBssid, 6) != 0 &&
+        memcmp(&p[16], deauthBssid, 6) != 0) {
+        return;
+    }
+    hsDataSeen.fetch_add(1, std::memory_order_relaxed);
     bool toDs = p[1] & 0x01;
     bool fromDs = p[1] & 0x02;
     bool qos = p[0] & 0x80;
     uint32_t hdr = 24 + ((toDs && fromDs) ? 6 : 0) + (qos ? 2 : 0);
     if (len < hdr + 17) return;
     if (memcmp(&p[hdr], EAPOL_LLC, 8) != 0) return;
-    if (memcmp(&p[4], deauthBssid, 6) != 0 && memcmp(&p[10], deauthBssid, 6) != 0 &&
-        memcmp(&p[16], deauthBssid, 6) != 0) {
-        return;
-    }
     hsEapolTotal.fetch_add(1, std::memory_order_relaxed);
     int msg = eapolMessageNumber(static_cast<uint16_t>((p[hdr + 13] << 8) | p[hdr + 14]));
     if (msg > 0) hsMsgCount[msg].fetch_add(1, std::memory_order_relaxed);
@@ -1458,18 +1460,25 @@ void drawHandshake() {
     snprintf(line, sizeof(line), "M1 %lu  M2 %lu  M3 %lu  M4 %lu", (unsigned long)m1, (unsigned long)m2,
              (unsigned long)m3, (unsigned long)m4);
     d.drawString(line, 4, 30);
-    snprintf(line, sizeof(line), "EAPOL %lu  beacon %s  deauth %s",
-             (unsigned long)hsEapolTotal.load(std::memory_order_relaxed),
-             hsBeaconSaved.load(std::memory_order_relaxed) ? "yes" : "no", hsDeauth ? "on" : "off");
+    snprintf(line, sizeof(line), "Data %lu  EAPOL %lu",
+             (unsigned long)hsDataSeen.load(std::memory_order_relaxed),
+             (unsigned long)hsEapolTotal.load(std::memory_order_relaxed));
     d.drawString(line, 4, 42);
+    snprintf(line, sizeof(line), "beacon %s  deauth %s", hsBeaconSaved.load(std::memory_order_relaxed) ? "yes" : "no",
+             hsDeauth ? "on" : "off");
+    d.drawString(line, 4, 54);
     bool crackable = m2 > 0 && (m1 > 0 || m3 > 0);
-    d.drawString(crackable ? "Crackable: YES (M2 + M1 or M3)" : "Crackable: not yet", 4, 58);
+    d.drawString(crackable ? "Crackable: YES (M2 + M1 or M3)" : "Crackable: not yet", 4, 66);
     if (pcapActive.load(std::memory_order_acquire)) {
-        snprintf(line, sizeof(line), "%s  %lu KB", pcapName, (unsigned long)(pcapBytes / 1024));
+        if (pcapBytes < 1024) {
+            snprintf(line, sizeof(line), "%s  %lu B", pcapName, (unsigned long)pcapBytes);
+        } else {
+            snprintf(line, sizeof(line), "%s  %lu KB", pcapName, (unsigned long)(pcapBytes / 1024));
+        }
     } else {
         snprintf(line, sizeof(line), "%s", pcapMsg);
     }
-    d.drawString(line, 4, 72);
+    d.drawString(line, 4, 78);
     d.setTextColor(COLOR_SECONDARY, COLOR_BG);
     d.drawString("Enter run  D deauth  Bksp back", 4, 124);
 }
@@ -1489,6 +1498,7 @@ void startHandshake() {
     setAnalyzerChannel(deauthCh);
     for (auto &c : hsMsgCount) c.store(0, std::memory_order_relaxed);
     hsEapolTotal.store(0, std::memory_order_relaxed);
+    hsDataSeen.store(0, std::memory_order_relaxed);
     hsBeaconSaved.store(false, std::memory_order_relaxed);
     wifi_promiscuous_filter_t filter = {WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA};
     esp_wifi_set_promiscuous_filter(&filter);
