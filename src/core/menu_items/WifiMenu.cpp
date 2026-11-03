@@ -16,6 +16,7 @@
 #include "modules/wifi/scan_hosts.h"
 #include "modules/wifi/sniffer.h"
 #include "modules/wifi/wifi_atks.h"
+#include "modules/gps/wardriving.h"
 
 #ifndef LITE_VERSION
 #include "modules/pwnagotchi/pwnagotchi.h"
@@ -40,6 +41,17 @@
 
 // global toggle - controls whether scanNetworks includes hidden SSIDs
 bool showHiddenNetworks = false;
+
+void WifiMenu::wardrivingMenu() {
+    options = {
+        {"Scan WiFi Networks", []() { Wardriving(true, false); }},
+        {"Scan BLE Devices",   []() { Wardriving(false, true); }},
+        {"Scan Both",          []() { Wardriving(true, true); } },
+        {"Back",               [this]() { optionsMenu(); }      },
+    };
+
+    loopOptions(options, MENU_TYPE_SUBMENU, "Wardriving");
+}
 
 void WifiMenu::optionsMenu() {
     returnToMenu = false;
@@ -94,6 +106,8 @@ void WifiMenu::optionsMenu() {
     options.push_back({"Brucegotchi", brucegotchi_start});
     options.push_back({"WiFi Pass Recovery", wifi_recover_menu});
 #endif
+
+    options.push_back({"Wardriving", [=]() { wardrivingMenu(); }});
 
     options.push_back({"Config", [this]() { configMenu(); }});
 

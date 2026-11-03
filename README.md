@@ -13,7 +13,7 @@ Kaiju is a custom **Bruce firmware build** personalized for Cap Sails with:
 - **70's Nautical Aesthetic**: Burnt orange, sand, and gold color scheme with a groovy anchor-themed splash screen
 - **Hydra RF 424 Optimized**: Full support for CC1101 (433 MHz) + nRF24 (2.4 GHz) dual-band radio attacks
 - **20 Built-in Attack Scripts**: JavaScript apps for WiFi spam, BLE hijacking, RF sniffing, and environmental scanning
-- **Simplified Menu**: Streamlined for real hacking — WiFi, BLE, RF, NRF24, IR, RFID, Files, Settings
+- **Menu**: Sub-GHz, 2.4GHz, Infrared, WiFi, BLE, Files, Apps, Clock, Tools, Settings
 - **Party Trick Ready**: Deauth networks, confuse Bluetooth devices, jam signals, and impress your friends
 
 ---

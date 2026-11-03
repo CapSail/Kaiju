@@ -10,8 +10,11 @@ MainMenu::MainMenu() {
         &rfMenu,
         &nrf24Menu,
         &irMenu,
-        &rfidMenu,
         &fileMenu,
+#if !defined(LITE_VERSION) && !defined(DISABLE_INTERPRETER)
+        &scriptsMenu,
+#endif
+        &clockMenu,
         &othersMenu,
         &configMenu,
     };
@@ -52,7 +55,7 @@ void MainMenu::begin(void) {
             );
         }
     }
-    _currentIndex = loopOptions(options, MENU_TYPE_MAIN, "Main Menu", _currentIndex);
+    _currentIndex = loopOptions(options, MENU_TYPE_MAIN, "Kaiju", _currentIndex);
 };
 
 /*********************************************************************

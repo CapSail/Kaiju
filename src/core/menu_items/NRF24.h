@@ -5,7 +5,7 @@
 
 class NRF24Menu : public MenuItemInterface {
 public:
-    NRF24Menu() : MenuItemInterface("NRF24") {}
+    NRF24Menu() : MenuItemInterface("2.4GHz") {}
 
     void optionsMenu(void);
     void configMenu(void);

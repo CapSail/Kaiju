@@ -8,6 +8,7 @@ public:
     WifiMenu() : MenuItemInterface("WiFi") {}
 
     void optionsMenu(void);
+    void wardrivingMenu(void);
     void drawIcon(float scale);
     bool hasTheme() { return bruceConfig.theme.wifi; }
     const String& themePath() override { return bruceConfig.theme.paths.wifi; }

@@ -65,7 +65,7 @@ public:
     // Theme colors in RGB565 format
     uint16_t priColor = DEFAULT_PRICOLOR;
     uint16_t secColor = DEFAULT_PRICOLOR - 0x2000;
-    uint16_t bgColor = 0x0000;
+    uint16_t bgColor = 0x20A1; // deep brown
 
     // UI Color
     void _setUiColor(uint16_t primary, uint16_t *secondary = nullptr, uint16_t *background = nullptr);

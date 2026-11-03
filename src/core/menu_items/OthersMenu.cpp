@@ -26,9 +26,6 @@ void OthersMenu::optionsMenu() {
         {"BadUSB & HID", [this]() { badUsbHidMenu(); }},
 #endif
 
-#ifndef LITE_VERSION
-        {"iButton",      setup_ibutton                },
-#endif
 
         // Timer removed - moved to another "Clock"
     };
