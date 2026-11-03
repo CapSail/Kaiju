@@ -2155,7 +2155,7 @@ void tickKarma() {
 
 constexpr int AP_TABLE_MAX = 64;
 constexpr int AUTO_SSID_MAX = 32;
-constexpr uint32_t AUTO_SCOUT_MS = 30000;
+constexpr uint32_t AUTO_SCOUT_MS = 60000;
 constexpr uint32_t AUTO_HUNT_MS = 90000;
 constexpr uint32_t AUTO_DEAUTH_MS = 30000;
 constexpr uint32_t AUTO_HOP_MS = 400;
@@ -2176,7 +2176,7 @@ struct ApRec {
 ApRec apTable[AP_TABLE_MAX];
 std::atomic<int> apCount{0};
 
-enum class AutoStage : uint8_t { IDLE, SCOUT, HUNT };
+enum class AutoStage : uint8_t { IDLE, SCOUT, REVIEW, HUNT, FINISHED };
 AutoStage autoStage = AutoStage::IDLE;
 uint32_t autoStageStart = 0;
 uint32_t autoLastHop = 0;
@@ -2301,7 +2301,7 @@ void startAutoHunt(int idx) {
     if (!pcapActive.load(std::memory_order_acquire)) {
         autoTarget = -1;
         snprintf(autoMsg, sizeof(autoMsg), "no SD card: not hunting");
-        startAutoScout();
+        autoStage = AutoStage::FINISHED;
         return;
     }
     wifi_promiscuous_filter_t filter = {WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA};
@@ -2313,6 +2313,8 @@ void startAutoHunt(int idx) {
     autoLastBurst = 0;
     snprintf(autoMsg, sizeof(autoMsg), "hunting %.20s", deauthSsid);
 }
+
+void autoNextTest();
 
 void endAutoHunt(bool ok) {
     stopAutoRadio();
@@ -2332,7 +2334,78 @@ void endAutoHunt(bool ok) {
         snprintf(autoMsg, sizeof(autoMsg), "no handshake: %.16s", deauthSsid);
     }
     autoTarget = -1;
-    startAutoScout();
+    autoNextTest();
+}
+
+int autoSel = 0;
+int autoTop = 0;
+uint32_t autoCapturesAtTestStart = 0;
+constexpr int AUTO_REVIEW_ROWS = 6;
+
+void toggleOwnBssid(const uint8_t *b) {
+    for (int i = 0; i < ownCount; i++) {
+        if (memcmp(ownBssid[i], b, 6) == 0) {
+            for (int j = i + 1; j < ownCount; j++) memcpy(ownBssid[j - 1], ownBssid[j], 6);
+            ownCount--;
+            saveOwnList();
+            return;
+        }
+    }
+    if (ownCount >= OWN_MAX) return;
+    memcpy(ownBssid[ownCount], b, 6);
+    ownCount++;
+    saveOwnList();
+}
+
+void sortAutoTable() {
+    int count = apCount.load(std::memory_order_relaxed);
+    for (int i = 1; i < count; i++) {
+        ApRec tmp = apTable[i];
+        int j = i - 1;
+        while (j >= 0 && apTable[j].rssi < tmp.rssi) {
+            apTable[j + 1] = apTable[j];
+            j--;
+        }
+        apTable[j + 1] = tmp;
+    }
+}
+
+void autoNextTest() {
+    int t = pickAutoTarget();
+    if (t < 0) {
+        autoTarget = -1;
+        autoStage = AutoStage::FINISHED;
+        return;
+    }
+    startAutoHunt(t);
+}
+
+void enterReview() {
+    stopAutoRadio();
+    sortAutoTable();
+    autoSel = 0;
+    autoTop = 0;
+    autoStage = AutoStage::REVIEW;
+    snprintf(autoMsg, sizeof(autoMsg), "%s", "mark yours with O, then Enter");
+}
+
+void startAutoTest() {
+    int t = pickAutoTarget();
+    if (t < 0) {
+        int count = apCount.load(std::memory_order_relaxed);
+        int marked = 0;
+        for (int i = 0; i < count; i++) {
+            if (isOwnBssid(apTable[i].bssid)) marked++;
+        }
+        if (marked == 0) {
+            snprintf(autoMsg, sizeof(autoMsg), "%s", "mark yours with O first");
+        } else {
+            snprintf(autoMsg, sizeof(autoMsg), "%s", "marked ones are PMF, done, or tried twice");
+        }
+        return;
+    }
+    autoCapturesAtTestStart = autoCaptures;
+    startAutoHunt(t);
 }
 
 void startKaijugotchi() {
@@ -2341,10 +2414,13 @@ void startKaijugotchi() {
     if (ensureSd() && !SD.exists("/kaiju")) SD.mkdir("/kaiju");
     apCount.store(0, std::memory_order_relaxed);
     autoCaptures = 0;
+    autoCapturesAtTestStart = 0;
     autoLastOkAt = 0;
     autoFile[0] = '\0';
+    autoSel = 0;
+    autoTop = 0;
     if (ensureSd()) {
-        snprintf(autoMsg, sizeof(autoMsg), "%s", "scouting");
+        snprintf(autoMsg, sizeof(autoMsg), "%s", "scanning all networks");
     } else {
         snprintf(autoMsg, sizeof(autoMsg), "%s", "no SD card: nothing saved");
     }
@@ -2367,11 +2443,68 @@ void stopKaijugotchi() {
     snprintf(autoMsg, sizeof(autoMsg), "%s", "stopped");
 }
 
+void drawAutoReview() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    int count = apCount.load(std::memory_order_relaxed);
+    int marked = 0;
+    for (int i = 0; i < count; i++) {
+        if (isOwnBssid(apTable[i].bssid)) marked++;
+    }
+    char line[64];
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    snprintf(line, sizeof(line), "REVIEW  %d found  %d marked yours", count, marked);
+    d.drawString(line, 4, 4);
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString(autoMsg, 4, 16);
+    if (count == 0) d.drawString("No networks seen. Bksp, then retry.", 4, 30);
+    for (int row = 0; row < AUTO_REVIEW_ROWS; row++) {
+        int idx = autoTop + row;
+        if (idx >= count) break;
+        const ApRec &a = apTable[idx];
+        snprintf(line, sizeof(line), "%c%c%-12.12s %-5s %4d", idx == autoSel ? '>' : ' ',
+                 isOwnBssid(a.bssid) ? '*' : ' ', a.ssid[0] != '\0' ? a.ssid : "<hidden>",
+                 verdictTag(computeVerdict(a.flags)), static_cast<int>(a.rssi));
+        d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+        d.drawString(line, 4, 30 + row * 12);
+    }
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString("O mark yours   Enter test marked", 4, 110);
+    d.drawString("Bksp back", 4, 124);
+}
+
+void drawAutoDone() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(2);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    d.drawString("TEST DONE", 6, 6);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    char line[64];
+    snprintf(line, sizeof(line), "Handshakes this test: %lu",
+             static_cast<unsigned long>(autoCaptures - autoCapturesAtTestStart));
+    d.drawString(line, 6, 40);
+    snprintf(line, sizeof(line), "%s", autoMsg);
+    d.drawString(line, 6, 56);
+    d.drawString("Failed hunts left no files.", 6, 72);
+    d.drawString("Enter: review   Bksp back", 6, 124);
+}
+
 void drawKaijugotchi() {
+    if (autoStage == AutoStage::REVIEW) {
+        drawAutoReview();
+        return;
+    }
+    if (autoStage == AutoStage::FINISHED) {
+        drawAutoDone();
+        return;
+    }
     auto &d = M5Cardputer.Display;
     d.fillScreen(COLOR_BG);
     uint32_t now = millis();
-    const char *stage = autoStage == AutoStage::HUNT ? "HUNTING" : (autoStage == AutoStage::SCOUT ? "SCOUTING" : "READY");
+    const char *stage = autoStage == AutoStage::HUNT ? "TESTING" : (autoStage == AutoStage::SCOUT ? "SCANNING" : "READY");
     const char *face = autoStage == AutoStage::HUNT ? "(>_<)" : (autoStage == AutoStage::SCOUT ? "(o_o)" : "(-_-)");
     if (autoLastOkAt != 0 && now - autoLastOkAt < 5000) face = "(^o^)";
     d.setTextColor(COLOR_PRIMARY, COLOR_BG);
@@ -2385,7 +2518,7 @@ void drawKaijugotchi() {
     for (int i = 0; i < seen; i++) {
         if (isOwnBssid(apTable[i].bssid)) mine++;
     }
-    snprintf(line, sizeof(line), "Networks seen %d   yours %d", seen, mine);
+    snprintf(line, sizeof(line), "Networks seen %d   marked %d", seen, mine);
     d.drawString(line, 4, 26);
     snprintf(line, sizeof(line), "Handshakes saved %lu", (unsigned long)autoCaptures);
     d.drawString(line, 4, 38);
@@ -2407,13 +2540,12 @@ void drawKaijugotchi() {
     d.drawRect(4, 64, 232, 8, COLOR_SECONDARY);
     if (fill > 0) d.fillRect(5, 65, fill, 6, COLOR_PRIMARY);
     d.setTextColor(COLOR_SECONDARY, COLOR_BG);
-    if (ownCount == 0) {
-        d.drawString("Nothing marked yet: passive only.", 4, 78);
-        d.drawString("WiFi > Deauth flood, press O on yours.", 4, 88);
-    } else {
-        d.drawString("Hunting only the networks you marked.", 4, 78);
+    if (autoStage == AutoStage::SCOUT) {
+        d.drawString("Scan runs 60 s. Enter: review now", 4, 78);
+    } else if (autoStage == AutoStage::HUNT) {
+        d.drawString("Testing only networks you marked.", 4, 78);
     }
-    d.drawString("Enter start/stop  Bksp back", 4, 124);
+    d.drawString(autoStage == AutoStage::HUNT ? "Enter: stop test  Bksp back" : "Enter: review  Bksp back", 4, 124);
 }
 
 void tickKaijugotchi() {
@@ -2426,14 +2558,9 @@ void tickKaijugotchi() {
             setAnalyzerChannel(autoHopCh);
         }
         autoLogNew();
-        if (now - autoStageStart >= AUTO_SCOUT_MS) {
-            int t = pickAutoTarget();
-            if (t >= 0 && ensureSd()) {
-                startAutoHunt(t);
-            } else {
-                autoStageStart = now;
-            }
-        }
+        if (now - autoStageStart >= AUTO_SCOUT_MS) enterReview();
+    } else if (autoStage == AutoStage::REVIEW) {
+        autoLogNew();
     } else if (autoStage == AutoStage::HUNT) {
         if (now - autoLastBurst >= AUTO_BURST_MS && now - autoStageStart < AUTO_DEAUTH_MS) {
             autoLastBurst = now;
@@ -2449,22 +2576,6 @@ void tickKaijugotchi() {
         autoLastDraw = now;
         drawKaijugotchi();
     }
-}
-
-void toggleOwn(int idx) {
-    for (int i = 0; i < ownCount; i++) {
-        if (memcmp(ownBssid[i], dlBssid[idx], 6) == 0) {
-            for (int j = i + 1; j < ownCount; j++) memcpy(ownBssid[j - 1], ownBssid[j], 6);
-            ownCount--;
-            saveOwnList();
-            return;
-        }
-    }
-    if (ownCount < OWN_MAX) {
-        memcpy(ownBssid[ownCount], dlBssid[idx], 6);
-        ownCount++;
-    }
-    saveOwnList();
 }
 
 // ---- BLE scan (passive, active scan, nothing saved) ----
@@ -2992,11 +3103,39 @@ void loop() {
             stopKaijugotchi();
             screen = Screen::WifiMenu;
             drawWifiMenu();
-        } else if (ks.enter) {
-            if (autoStage == AutoStage::IDLE) {
-                startKaijugotchi();
-            } else {
+        } else if (autoStage == AutoStage::REVIEW) {
+            int count = apCount.load(std::memory_order_relaxed);
+            if (up) {
+                if (autoSel > 0) autoSel--;
+                if (autoSel < autoTop) autoTop = autoSel;
+                drawKaijugotchi();
+            } else if (down) {
+                if (autoSel + 1 < count) autoSel++;
+                if (autoSel >= autoTop + AUTO_REVIEW_ROWS) autoTop = autoSel - AUTO_REVIEW_ROWS + 1;
+                drawKaijugotchi();
+            } else if (wordHas(ks.word, 'o')) {
+                if (autoSel < count) toggleOwnBssid(apTable[autoSel].bssid);
+                drawKaijugotchi();
+            } else if (ks.enter) {
+                startAutoTest();
+                drawKaijugotchi();
+            }
+        } else if (autoStage == AutoStage::FINISHED) {
+            if (ks.enter) {
+                enterReview();
+                drawKaijugotchi();
+            }
+        } else if (autoStage == AutoStage::HUNT) {
+            if (ks.enter) {
                 stopKaijugotchi();
+                enterReview();
+                drawKaijugotchi();
+            }
+        } else if (ks.enter) {
+            if (autoStage == AutoStage::SCOUT) {
+                enterReview();
+            } else {
+                startKaijugotchi();
             }
             drawKaijugotchi();
         }
