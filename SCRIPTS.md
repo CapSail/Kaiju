@@ -28,7 +28,6 @@ All scripts are in the `scripts/` folder and run through Bruce's built-in **MQjs
 | 16 | `emergency_stop.js` | Safety | Kill all transmissions | Instant |
 | 17 | `packet_sniffer_logger.js` | Multi | Record all wireless traffic | 60 sec |
 | 18 | `channel_analyzer.js` | WiFi | Find best WiFi channels | 30 sec |
-| 19 | `social_engineering_generator.js` | Analysis | Analyze fake network tactics | Instant |
 | 20 | `status_report.js` | Info | Show device capabilities | Instant |
 | 21 | `motion_radar.js` | Radar | WiFi-based motion detection | 60 sec |
 | 22 | `enhanced_motion_radar.js` | Radar | Multi-band motion (WiFi+RF+BLE) | 90 sec |
@@ -568,34 +567,6 @@ Results:
 - Select best channels for your rogue AP
 - Avoid crowded frequencies
 - Optimize signal strength
-
----
-
-### 19_social_engineering_generator.js
-**Category:** Analysis  
-**Purpose:** Analyze social engineering tactics
-
-```javascript
-// Examines fake network names
-// Rates effectiveness against different users
-```
-
-**Output Example:**
-```
-Social Engineering Network Analysis
-Fake networks: 5
-Networks:
-  AWS_Redacted → High effectiveness (corporate)
-  Google-Guest → High effectiveness (Apple users)
-  Hotel_Lobby_WiFi → High effectiveness (travelers)
-  Apple_Network → High effectiveness (brand trust)
-  Microsoft_Update_Center → High effectiveness (fake updates)
-```
-
-**Use Case:** 
-- Understand user psychology
-- Plan social engineering attacks
-- Educational awareness training
 
 ---
 

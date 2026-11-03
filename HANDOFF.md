@@ -82,7 +82,7 @@ Last device-tested build: commit `2159712e`.
 - Theme: `src/core/theme.h` sets `DEFAULT_PRICOLOR 0xD5B1` and `DEFAULT_SECCOLOR 0x9BCA` (tan and brown). Commit `9c1cd6ee`.
 - Boot splash "Kaiju / Cappy's Play": `src/main.cpp`, boot screen. Commit `f3abac0d`.
 - Menu trimmed to items that work. Commit `f3abac0d`.
-- Scripts: 18 broken scripts removed. `20_status_report.js` and `23_kaiju_flasher.js` fixed to use only calls Bruce supports. Kept: `02_wifi_beacon_spam.js`, `03_ble_device_finder.js`, and `19_social_engineering_generator.js`. The kept scripts were not re-tested in this session.
+- Scripts: 18 broken scripts removed. `20_status_report.js` and `23_kaiju_flasher.js` fixed to use only calls Bruce supports. Kept: `02_wifi_beacon_spam.js` and `03_ble_device_finder.js`. `19_social_engineering_generator.js` was removed by the owner (brand-impersonating SSID list, no device function). The kept scripts were not re-tested in this session.
 - Build fixes committed: `patch.py` calls `python -m platformio`, and FastLED is pinned to 3.10.3.
 - Device test status for v1 was not recorded in this session. Confirm it before relying on it.
 
@@ -90,9 +90,8 @@ Last device-tested build: commit `2159712e`.
 
 1. Attach `CapSail/Kaiju` on branch `ccr-797e4c88-p1o4x6`.
 2. Read `HANDOFF.md` and `kaiju-v2/STATUS.md`.
-3. Decide with the owner whether to keep `19_social_engineering_generator.js` in `scripts/`.
-4. Compile and flash `kaiju-v2` at HEAD on the owner's PC. If the build fails, paste the first error.
-5. Work through the "Still needs a test" list.
+3. Compile and flash `kaiju-v2` at HEAD on the owner's PC. If the build fails, paste the first error.
+4. Work through the "Still needs a test" list.
 
 ## Not started
 
