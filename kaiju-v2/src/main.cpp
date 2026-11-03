@@ -44,6 +44,8 @@ enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSni
 Screen screen = Screen::Menu;
 int selected = 0;
 int wifiToolSel = 0;
+int wifiToolTop = 0;
+constexpr int WIFI_MENU_ROWS = 7;
 int netCount = 0;
 int netSel = 0;
 int netTop = 0;
@@ -93,8 +95,10 @@ void drawWifiMenu() {
     d.setTextColor(COLOR_PRIMARY, COLOR_BG);
     d.drawString("WiFi", 8, 4);
     d.setTextSize(1);
-    for (int i = 0; i < WIFI_TOOL_COUNT; i++) {
-        int y = 32 + i * 12;
+    for (int row = 0; row < WIFI_MENU_ROWS; row++) {
+        int i = wifiToolTop + row;
+        if (i >= WIFI_TOOL_COUNT) break;
+        int y = 26 + row * 12;
         if (i == wifiToolSel) {
             d.fillRect(0, y - 1, d.width(), 11, COLOR_PRIMARY);
             d.setTextColor(COLOR_BG, COLOR_PRIMARY);
@@ -1903,6 +1907,7 @@ void loop() {
             if (selected == WIFI_ITEM) {
                 screen = Screen::WifiMenu;
                 wifiToolSel = 0;
+                wifiToolTop = 0;
                 drawWifiMenu();
             } else {
                 screen = Screen::Placeholder;
@@ -1924,9 +1929,13 @@ void loop() {
             drawMenu();
         } else if (up) {
             wifiToolSel = (wifiToolSel + WIFI_TOOL_COUNT - 1) % WIFI_TOOL_COUNT;
+            if (wifiToolSel < wifiToolTop) wifiToolTop = wifiToolSel;
+            if (wifiToolSel >= wifiToolTop + WIFI_MENU_ROWS) wifiToolTop = wifiToolSel - WIFI_MENU_ROWS + 1;
             drawWifiMenu();
         } else if (down) {
             wifiToolSel = (wifiToolSel + 1) % WIFI_TOOL_COUNT;
+            if (wifiToolSel < wifiToolTop) wifiToolTop = wifiToolSel;
+            if (wifiToolSel >= wifiToolTop + WIFI_MENU_ROWS) wifiToolTop = wifiToolSel - WIFI_MENU_ROWS + 1;
             drawWifiMenu();
         } else if (ks.enter) {
             if (wifiToolSel == WIFI_TOOL_SCAN) {
