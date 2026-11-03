@@ -1633,9 +1633,9 @@ void setTheme() {
              bruceConfig.removeTheme();
              bruceConfig.themePath = "";
              bruceConfig.theme.fs = 0;
-             bruceConfig.secColor = DEFAULT_SECCOLOR;
-             bruceConfig.bgColor = TFT_BLACK;
-             bruceConfig.setUiColor(DEFAULT_PRICOLOR);
+             uint16_t defSec = DEFAULT_SECCOLOR;
+             uint16_t defBg = DEFAULT_BGCOLOR;
+             bruceConfig.setUiColor(DEFAULT_PRICOLOR, &defSec, &defBg);
 #ifdef HAS_RGB_LED
              bruceConfig.ledBright = 50;
              bruceConfig.ledColor = 0x960064;

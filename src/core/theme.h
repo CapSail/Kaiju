@@ -3,8 +3,9 @@
 #include "sd_functions.h"
 #include <ArduinoJson.h>
 
-#define DEFAULT_PRICOLOR 0xFB60
-#define DEFAULT_SECCOLOR 0xC920
+#define DEFAULT_PRICOLOR 0x4962 // 70s brown
+#define DEFAULT_SECCOLOR 0xB285 // 70s rust
+#define DEFAULT_BGCOLOR 0xD5B1  // 70s tan
 
 struct themeFiles {
     String wifi = "";
@@ -64,8 +65,8 @@ public:
 
     // Theme colors in RGB565 format
     uint16_t priColor = DEFAULT_PRICOLOR;
-    uint16_t secColor = DEFAULT_PRICOLOR - 0x2000;
-    uint16_t bgColor = 0x20A1; // deep brown
+    uint16_t secColor = DEFAULT_SECCOLOR;
+    uint16_t bgColor = DEFAULT_BGCOLOR;
 
     // UI Color
     void _setUiColor(uint16_t primary, uint16_t *secondary = nullptr, uint16_t *background = nullptr);

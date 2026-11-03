@@ -5,7 +5,10 @@
 
 #define UI_COLOR_DEFAULT_PRI DEFAULT_PRICOLOR
 #define UI_COLOR_DEFAULT_SEC DEFAULT_SECCOLOR
-#define UI_COLOR_DEFAULT_BG 0x0
+#define UI_COLOR_DEFAULT_BG DEFAULT_BGCOLOR
+#define UI_COLOR_NIGHT_PRI 0xFB60
+#define UI_COLOR_NIGHT_SEC 0xC920
+#define UI_COLOR_NIGHT_BG 0x0
 #define UI_COLOR_WHITE_PRI 0xFFFF
 #define UI_COLOR_WHITE_SEC 0xCE79
 #define UI_COLOR_WHITE_BG 0x0
@@ -57,7 +60,8 @@ struct ColorEntry {
 };
 
 static constexpr ColorEntry UI_COLORS[] = {
-    {"Default",       UI_COLOR_DEFAULT_PRI,       UI_COLOR_DEFAULT_SEC,       UI_COLOR_DEFAULT_BG      },
+    {"Kaiju 70s",     UI_COLOR_DEFAULT_PRI,       UI_COLOR_DEFAULT_SEC,       UI_COLOR_DEFAULT_BG      },
+    {"Orange Night",  UI_COLOR_NIGHT_PRI,         UI_COLOR_NIGHT_SEC,         UI_COLOR_NIGHT_BG        },
     {"White",         UI_COLOR_WHITE_PRI,         UI_COLOR_WHITE_SEC,         UI_COLOR_WHITE_BG        },
     {"Dark Gray",     UI_COLOR_DARK_GRAY_PRI,     UI_COLOR_DARK_GRAY_SEC,     UI_COLOR_DARK_GRAY_BG    },
     {"Red",           UI_COLOR_RED_PRI,           UI_COLOR_RED_SEC,           UI_COLOR_RED_BG          },
