@@ -9,6 +9,7 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include "esp_wifi.h"
+#include <NimBLEDevice.h>
 
 namespace {
 
@@ -19,6 +20,7 @@ constexpr uint16_t COLOR_BG = TFT_BLACK;
 const char *const MENU_ITEMS[] = {"WiFi", "BLE", "RF 433MHz", "NRF24 2.4GHz", "IR", "RFID", "Files", "Settings"};
 constexpr int MENU_COUNT = sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]);
 constexpr int WIFI_ITEM = 0;
+constexpr int BLE_ITEM = 1;
 
 const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer", "Packet sniffer", "Beacon spam", "Deauth flood", "Karma", "Handshake capture", "Evil portal", "Portal creds", "Kaijugotchi"};
 constexpr int WIFI_TOOL_COUNT = sizeof(WIFI_TOOLS) / sizeof(WIFI_TOOLS[0]);
@@ -40,7 +42,7 @@ constexpr uint32_t CH_DWELL_MS = 300;
 constexpr int BAR_BASE_Y = 108;
 constexpr int BAR_MAX_H = 72;
 
-enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun, WifiHsRun, WifiPortalRun, WifiCredsFiles, WifiCredsView, WifiAutoRun };
+enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun, WifiHsRun, WifiPortalRun, WifiCredsFiles, WifiCredsView, WifiAutoRun, BleScan };
 
 Screen screen = Screen::Menu;
 int selected = 0;
@@ -2465,6 +2467,107 @@ void toggleOwn(int idx) {
     saveOwnList();
 }
 
+// ---- BLE scan (passive, active scan, nothing saved) ----
+constexpr int BLE_ROWS_MAX = 24;
+constexpr int BLE_VISIBLE_ROWS = 7;
+constexpr uint32_t BLE_SCAN_MS = 6000;
+
+struct BleRow {
+    char name[13];
+    char mac[18];
+    char tag[10];
+    int rssi;
+};
+BleRow bleRows[BLE_ROWS_MAX];
+int bleCount = 0;
+int bleSel = 0;
+int bleTop = 0;
+bool bleInited = false;
+char bleMsg[40] = "not scanned yet";
+
+const char *bleTagFor(const std::string &manuf) {
+    if (manuf.size() < 3) return "-";
+    const uint8_t *d = reinterpret_cast<const uint8_t *>(manuf.data());
+    uint16_t company = static_cast<uint16_t>(d[0] | (d[1] << 8));
+    if (company == 0x004C) return d[2] == 0x12 ? "FindMy" : "Apple";
+    if (company == 0x00E0) return "Google";
+    if (company == 0x0075) return "Samsung";
+    return "-";
+}
+
+void bleScanNow() {
+    if (!bleInited) {
+        NimBLEDevice::init("Kaiju");
+        bleInited = true;
+    }
+    NimBLEScan *scan = NimBLEDevice::getScan();
+    if (scan == nullptr) {
+        bleCount = 0;
+        snprintf(bleMsg, sizeof(bleMsg), "%s", "BLE not available");
+        return;
+    }
+    scan->setActiveScan(true);
+    scan->setInterval(97);
+    scan->setWindow(67);
+    NimBLEScanResults results = scan->getResults(BLE_SCAN_MS, false);
+    int total = results.getCount();
+    bleCount = 0;
+    for (int i = 0; i < total && bleCount < BLE_ROWS_MAX; i++) {
+        const NimBLEAdvertisedDevice *dev = results.getDevice(i);
+        if (dev == nullptr) continue;
+        BleRow &r = bleRows[bleCount++];
+        std::string nm = dev->getName().c_str();
+        snprintf(r.name, sizeof(r.name), "%s", nm.empty() ? "<no name>" : nm.c_str());
+        std::string addr = dev->getAddress().toString().c_str();
+        snprintf(r.mac, sizeof(r.mac), "%s", addr.c_str());
+        std::string manuf = dev->haveManufacturerData() ? dev->getManufacturerData() : std::string();
+        snprintf(r.tag, sizeof(r.tag), "%s", bleTagFor(manuf));
+        r.rssi = dev->getRSSI();
+    }
+    scan->clearResults();
+    for (int i = 1; i < bleCount; i++) {
+        BleRow tmp = bleRows[i];
+        int j = i - 1;
+        while (j >= 0 && bleRows[j].rssi < tmp.rssi) {
+            bleRows[j + 1] = bleRows[j];
+            j--;
+        }
+        bleRows[j + 1] = tmp;
+    }
+    bleSel = 0;
+    bleTop = 0;
+    if (total > BLE_ROWS_MAX) {
+        snprintf(bleMsg, sizeof(bleMsg), "%d found, showing %d", total, bleCount);
+    } else {
+        snprintf(bleMsg, sizeof(bleMsg), "%d found", bleCount);
+    }
+}
+
+void drawBleScan() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    d.drawString("BLE scan", 4, 4);
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString(bleMsg, 4, 16);
+    if (bleCount == 0) {
+        d.drawString("Enter: scan 6 s", 4, 30);
+    }
+    for (int row = 0; row < BLE_VISIBLE_ROWS; row++) {
+        int idx = bleTop + row;
+        if (idx >= bleCount) break;
+        const BleRow &r = bleRows[idx];
+        const char *tail = strlen(r.mac) > 9 ? r.mac + 9 : r.mac;
+        char line[48];
+        snprintf(line, sizeof(line), "%c%-11.11s %-7.7s %4d %s", idx == bleSel ? '>' : ' ', r.name, r.tag, r.rssi, tail);
+        d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+        d.drawString(line, 4, 30 + row * 12);
+    }
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString("Enter scan  ; . move  Bksp back", 4, 124);
+}
+
 bool wordHas(const std::vector<char> &word, char c) {
     for (char w : word) {
         if (tolower(w) == c) return true;
@@ -2526,6 +2629,11 @@ void loop() {
                 wifiToolSel = 0;
                 wifiToolTop = 0;
                 drawWifiMenu();
+            } else if (selected == BLE_ITEM) {
+                screen = Screen::BleScan;
+                bleSel = 0;
+                bleTop = 0;
+                drawBleScan();
             } else {
                 screen = Screen::Placeholder;
                 drawPlaceholder();
@@ -2891,6 +2999,25 @@ void loop() {
                 stopKaijugotchi();
             }
             drawKaijugotchi();
+        }
+        break;
+    case Screen::BleScan:
+        if (back) {
+            screen = Screen::Menu;
+            drawMenu();
+        } else if (up) {
+            if (bleSel > 0) bleSel--;
+            if (bleSel < bleTop) bleTop = bleSel;
+            drawBleScan();
+        } else if (down) {
+            if (bleSel + 1 < bleCount) bleSel++;
+            if (bleSel >= bleTop + BLE_VISIBLE_ROWS) bleTop = bleSel - BLE_VISIBLE_ROWS + 1;
+            drawBleScan();
+        } else if (ks.enter) {
+            snprintf(bleMsg, sizeof(bleMsg), "%s", "scanning 6 s...");
+            drawBleScan();
+            bleScanNow();
+            drawBleScan();
         }
         break;
     }
