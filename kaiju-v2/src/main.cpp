@@ -1,3 +1,4 @@
+#include <cctype>
 #include <M5Cardputer.h>
 
 namespace {
