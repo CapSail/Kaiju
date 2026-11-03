@@ -16,7 +16,7 @@ Build: `python -m platformio run -e cardputer-adv -t upload` from this folder.
 | 8 | Karma: listens on all channels. Only devices whose MAC is in /kaiju/karma_allow.txt (one MAC per line) trigger it. An allowed probe hosts the evil portal under the requested name for 90 s, then returns to listening. Only hosts that captured credentials are logged to /kaiju/karma_log.txt. No allowlist means nothing hosts | Verified on device (basic run). Phones need MAC randomization off for the test network |
 | 9 | Handshake capture: pick an AP from the list, save its beacon and all EAPOL frames to /pcap/hs_*.pcap. Counts M1-M4 and shows when crackable. D toggles deauth to force reconnects. On stop, the file is kept only if crackable (M2 plus M1 or M3); otherwise it is deleted | Verified on device (basic run). Delete-on-stop not yet tested |
 | 10 | Evil portal: open network with the chosen SSID, DNS catches all names, captive redirect. Template: first .html in SD /PortalTemplates, else a plain built-in sign-in page. Each capture is saved to /BruceEvilCreds/<ssid>_creds.csv with session, SSID, channel, uptime, client IP, user agent, and browser time. Viewer: WiFi > Portal creds. No password checking against the real AP | Verified on device (basic run) |
-| 11 | Sniffer alerts: deauth or disassoc frames above 20 in 10 s, and a second access point seen under an already-seen name (possible evil twin). Shown on the sniffer screen | Twin alert verified on device. Deauth alert not yet tested (needs a second device sending deauth) |
+| 11 | Sniffer alerts: deauth or disassoc frames, 20 or more in 10 s, and a second access point seen under an already-seen name (possible evil twin). Shown on the sniffer screen | Twin alert verified on device. Deauth alert not yet tested (needs a second device sending deauth) |
 | 12 | Kaijugotchi: scans all networks for 60 s (logs new ones to /kaiju/wardrive.csv), then opens a review list with each network's verdict (VULN, PART, PMF). Press O to mark your own networks. Enter tests only the marked ones, strongest first, with up to two tries each. Saves a PCAP only when a crackable handshake is caught. Failed tests leave no file | Scan and hunt-to-scan cycle verified on device earlier. The review and test flow is not tested yet. Capture not tested: the test phone is 5 GHz only and the Cardputer is 2.4 GHz only |
 
 ## Need
@@ -36,7 +36,7 @@ Build: `python -m platformio run -e cardputer-adv -t upload` from this folder.
 - Logs keep the newest 200 entries. Wardrive log, Karma log, and per-SSID creds files rotate (creds go to _creds_2.csv, _creds_3.csv, and so on) so nothing is dropped silently.
 - Only useful data is saved. Kaijugotchi writes one wardrive line per new network and keeps a PCAP only for a crackable handshake. Failed hunts leave no file and no log line. Karma logs only hosts that captured credentials. A manual handshake capture is deleted on stop unless it is crackable.
 - Packet recording stops at 4 MB and says so on screen.
-- Viewer lists up to 40 files and shows the newest 60 entries of a file.
+- Viewer lists up to 50 files and shows the newest 60 entries of a file.
 
 ## Reuse rules
 
