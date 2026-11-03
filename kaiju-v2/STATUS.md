@@ -11,19 +11,23 @@ Build: `python -m platformio run -e cardputer-adv -t upload` from this folder.
 | 3 | WiFi tools menu, channel analyzer (passive, 13 channels, beacon counts) | Verified on device |
 | 4 | Packet sniffer: live counts by frame type, hop or lock channel | Verified on device |
 | 5 | Sniffer recording to SD as PCAP (256-byte snaplen) | Verified on device: records and saves. Wireshark open not yet confirmed |
+| 6 | Beacon spam: four lab SSIDs (KaijuLab-1 to 4), channel select | Built, awaiting device test. Verify from a phone's WiFi list |
 
 ## Need
 
 | Step | Feature | Notes |
 |---|---|---|
-| 6 | Active WiFi: deauth, beacon spam, probe, evil portal | Verify `esp_wifi_80211_tx` against 3.3.9 headers first. Lab use only |
-| 7 | BLE tools | Placeholder today |
-| 8 | RF 433 MHz (CC1101) listen and spectrum | Port logic from Bruce (AGPL-3). Needs Hydra pin config |
-| 9 | NRF24 2.4 GHz tools | Placeholder today. Hydra pin config |
-| 10 | IR send and read | Placeholder today |
-| 11 | RFID read | Placeholder today. Only tools that work with what's on the Hydra/Cardputer |
-| 12 | Files (SD browser) | Placeholder today |
-| 13 | Settings (brightness, theme) | Placeholder today |
+| 7 | Deauth | The ESP-IDF doc for `esp_wifi_80211_tx` lists beacon, probe, action, and data frames only, so deauth is undocumented. Test on your own AP first, and watch it with the sniffer |
+| 8 | Probe request flood | Probe frames are a documented type |
+| 9 | Evil portal (captive portal: DNS and HTTP) | Larger: needs a DNS server and web server. Lab use only |
+| 10 | Deauth and beacon detection alerts on the sniffer | Defensive: flag a spike in deauth or unexpected beacons |
+| 11 | BLE tools | Placeholder today |
+| 12 | RF 433 MHz (CC1101) listen and spectrum | Port logic from Bruce (AGPL-3). Needs Hydra pin config |
+| 13 | NRF24 2.4 GHz tools | Placeholder today. Hydra pin config |
+| 14 | IR send and read | Placeholder today |
+| 15 | RFID read | Placeholder today. Only tools that work with what's on the Hydra/Cardputer |
+| 16 | Files (SD browser) | Placeholder today |
+| 17 | Settings (brightness, theme) | Placeholder today |
 
 ## Reuse rules
 

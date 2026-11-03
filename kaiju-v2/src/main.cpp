@@ -1,6 +1,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <M5Cardputer.h>
 #include <SD.h>
 #include <SPI.h>
@@ -17,11 +18,12 @@ const char *const MENU_ITEMS[] = {"WiFi", "BLE", "RF 433MHz", "NRF24 2.4GHz", "I
 constexpr int MENU_COUNT = sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]);
 constexpr int WIFI_ITEM = 0;
 
-const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer", "Packet sniffer"};
+const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer", "Packet sniffer", "Beacon spam"};
 constexpr int WIFI_TOOL_COUNT = sizeof(WIFI_TOOLS) / sizeof(WIFI_TOOLS[0]);
 constexpr int WIFI_TOOL_SCAN = 0;
 constexpr int WIFI_TOOL_CHANNELS = 1;
 constexpr int WIFI_TOOL_SNIFF = 2;
+constexpr int WIFI_TOOL_BEACON = 3;
 
 constexpr int WIFI_VISIBLE_ROWS = 8;
 constexpr int CH_FIRST = 1;
@@ -30,7 +32,7 @@ constexpr uint32_t CH_DWELL_MS = 300;
 constexpr int BAR_BASE_Y = 108;
 constexpr int BAR_MAX_H = 72;
 
-enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff };
+enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiBeacon };
 
 Screen screen = Screen::Menu;
 int selected = 0;
@@ -528,6 +530,105 @@ void moveSnifferChannel(int delta) {
     drawSniffer();
 }
 
+const char *const BEACON_SSIDS[] = {"KaijuLab-1", "KaijuLab-2", "KaijuLab-3", "KaijuLab-4"};
+constexpr int BEACON_SSID_COUNT = sizeof(BEACON_SSIDS) / sizeof(BEACON_SSIDS[0]);
+constexpr uint32_t BEACON_PERIOD_MS = 100;
+constexpr uint32_t BEACON_REDRAW_MS = 1000;
+constexpr size_t BEACON_FRAME_MAX = 128;
+
+bool beaconRunning = false;
+int beaconCh = 6;
+uint32_t beaconSent = 0;
+uint32_t beaconErrors = 0;
+uint32_t beaconLastSend = 0;
+uint32_t beaconLastDraw = 0;
+
+size_t buildBeacon(uint8_t *f, const char *ssid, uint8_t idx, uint8_t ch) {
+    static const uint8_t RATES[] = {0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24};
+    uint8_t hdr[24] = {0x80, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                       0x02, 0x4b, 0x41, 0x49, 0x00, idx, 0x02, 0x4b, 0x41, 0x49, 0x00, idx,
+                       0x00, 0x00};
+    size_t p = 0;
+    memcpy(f, hdr, sizeof(hdr));
+    p = sizeof(hdr);
+    memset(f + p, 0, 8);
+    p += 8;
+    f[p++] = 0x64;
+    f[p++] = 0x00;
+    f[p++] = 0x01;
+    f[p++] = 0x04;
+    size_t n = strlen(ssid);
+    f[p++] = 0x00;
+    f[p++] = static_cast<uint8_t>(n);
+    memcpy(f + p, ssid, n);
+    p += n;
+    f[p++] = 0x01;
+    f[p++] = sizeof(RATES);
+    memcpy(f + p, RATES, sizeof(RATES));
+    p += sizeof(RATES);
+    f[p++] = 0x03;
+    f[p++] = 0x01;
+    f[p++] = ch;
+    return p;
+}
+
+void sendBeacons() {
+    uint8_t frame[BEACON_FRAME_MAX];
+    for (int i = 0; i < BEACON_SSID_COUNT; i++) {
+        size_t len = buildBeacon(frame, BEACON_SSIDS[i], static_cast<uint8_t>(i), static_cast<uint8_t>(beaconCh));
+        if (esp_wifi_80211_tx(WIFI_IF_STA, frame, static_cast<int>(len), true) == ESP_OK) {
+            beaconSent++;
+        } else {
+            beaconErrors++;
+        }
+    }
+}
+
+void drawBeacon() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    char line[48];
+    snprintf(line, sizeof(line), "Beacon spam  ch%-2d  %s", beaconCh, beaconRunning ? "RUNNING" : "stopped");
+    d.drawString(line, 4, 4);
+    snprintf(line, sizeof(line), "Sent %lu  errors %lu", (unsigned long)beaconSent, (unsigned long)beaconErrors);
+    d.drawString(line, 4, 20);
+    for (int i = 0; i < BEACON_SSID_COUNT; i++) {
+        d.drawString(BEACON_SSIDS[i], 12, 36 + i * 12);
+    }
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString("Enter start/stop  ;. ch  Bksp back", 4, 124);
+}
+
+void startBeacon() {
+    WiFi.mode(WIFI_STA);
+    setAnalyzerChannel(beaconCh);
+    beaconSent = 0;
+    beaconErrors = 0;
+    beaconLastSend = 0;
+    beaconLastDraw = 0;
+    beaconRunning = true;
+    drawBeacon();
+}
+
+void stopBeacon() {
+    beaconRunning = false;
+}
+
+void tickBeacon() {
+    if (!beaconRunning) return;
+    uint32_t now = millis();
+    if (now - beaconLastSend >= BEACON_PERIOD_MS) {
+        beaconLastSend = now;
+        sendBeacons();
+    }
+    if (now - beaconLastDraw >= BEACON_REDRAW_MS) {
+        beaconLastDraw = now;
+        drawBeacon();
+    }
+}
+
 bool wordHas(const std::vector<char> &word, char c) {
     for (char w : word) {
         if (tolower(w) == c) return true;
@@ -553,6 +654,7 @@ void loop() {
         pcapFlush(8192);
         tickSniffer();
     }
+    if (screen == Screen::WifiBeacon) tickBeacon();
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
 
     auto &ks = M5Cardputer.Keyboard.keysState();
@@ -607,6 +709,9 @@ void loop() {
             } else if (wifiToolSel == WIFI_TOOL_SNIFF) {
                 screen = Screen::WifiSniff;
                 startSniffer();
+            } else if (wifiToolSel == WIFI_TOOL_BEACON) {
+                screen = Screen::WifiBeacon;
+                drawBeacon();
             }
         }
         break;
@@ -649,6 +754,29 @@ void loop() {
             moveSnifferChannel(-1);
         } else if (down) {
             moveSnifferChannel(1);
+        }
+        break;
+
+    case Screen::WifiBeacon:
+        if (back) {
+            stopBeacon();
+            screen = Screen::WifiMenu;
+            drawWifiMenu();
+        } else if (ks.enter) {
+            if (beaconRunning) {
+                stopBeacon();
+            } else {
+                startBeacon();
+            }
+            drawBeacon();
+        } else if (up) {
+            beaconCh = beaconCh <= CH_FIRST ? CH_LAST : beaconCh - 1;
+            setAnalyzerChannel(beaconCh);
+            drawBeacon();
+        } else if (down) {
+            beaconCh = beaconCh >= CH_LAST ? CH_FIRST : beaconCh + 1;
+            setAnalyzerChannel(beaconCh);
+            drawBeacon();
         }
         break;
     }
