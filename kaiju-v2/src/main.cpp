@@ -3,8 +3,8 @@
 
 namespace {
 
-constexpr uint16_t COLOR_PRIMARY = 0xD69D;   // 70s beige
-constexpr uint16_t COLOR_SECONDARY = 0xB5AD; // darker tan
+constexpr uint16_t COLOR_PRIMARY = 0xD5B1;   // 70s tan #D2B48C
+constexpr uint16_t COLOR_SECONDARY = 0x9BCA; // brown #9C7A52
 constexpr uint16_t COLOR_BG = TFT_BLACK;
 
 const char *const MENU_ITEMS[] = {"WiFi", "BLE", "RF 433MHz", "NRF24 2.4GHz", "IR", "RFID", "Files", "Settings"};
@@ -78,8 +78,8 @@ void loop() {
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
 
     auto &ks = M5Cardputer.Keyboard.keysState();
-    bool up = ks.up || wordHas(ks.word, 'w');
-    bool down = ks.down || wordHas(ks.word, 's');
+    bool up = ks.up || wordHas(ks.word, ';') || wordHas(ks.word, 'w');
+    bool down = ks.down || wordHas(ks.word, '.') || wordHas(ks.word, 's');
     bool back = ks.backspace || ks.esc;
 
     if (inItem) {
