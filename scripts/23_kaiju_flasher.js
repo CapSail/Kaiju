@@ -139,7 +139,6 @@ function kaijuFlasher() {
         status: "SUCCESS",
         firmware_version: "Cap-ADV",
         device: "M5Stack Cardputer ADV",
-        build_date: new Date().toISOString(),
         flash_log: flash_log,
         next_steps: [
             "Boot will complete in ~5 seconds",
