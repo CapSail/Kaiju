@@ -19,17 +19,9 @@ Build: `python -m platformio run -e cardputer-adv -t upload` from this folder.
 | 11 | Sniffer alerts: deauth or disassoc frames, 20 or more in 10 s, and a second access point seen under an already-seen name (possible evil twin). Shown on the sniffer screen | Twin alert verified on device. Deauth alert not yet tested (needs a second device sending deauth) |
 | 12 | Kaijugotchi: scans all networks for 60 s (logs new ones to /kaiju/wardrive.csv), then opens a review list with each network's verdict (VULN, PART, PMF). Press O to mark your own networks. Enter tests only the marked ones, strongest first, with up to two tries each. Saves a PCAP only when a crackable handshake is caught. Failed tests leave no file | Scan and hunt-to-scan cycle verified on device earlier. The review and test flow is not tested yet. Capture not tested: the test phone is 5 GHz only and the Cardputer is 2.4 GHz only |
 
-## Need
+## Removed (WiFi-only build)
 
-| Step | Feature | Notes |
-|---|---|---|
-| 13 | BLE | Not started. Scope not decided |
-| 14 | RF 433 MHz (CC1101) listen and spectrum | Port logic from Bruce (AGPL-3). Needs Hydra pin config |
-| 15 | NRF24 2.4 GHz tools | Placeholder today. Hydra pin config |
-| 16 | IR send and read | Placeholder today |
-| 17 | RFID read | Placeholder today. Only tools that work with what's on the Hydra/Cardputer |
-| 18 | Files (SD browser) | Placeholder today |
-| 19 | Settings (brightness, theme) | Placeholder today |
+Removed on purpose: BLE, RF 433 MHz, NRF24, IR, RFID, Files, and Settings. The menu now holds only WiFi. The code is in commit `1540fe3` if it's ever needed again.
 
 ## Limits
 

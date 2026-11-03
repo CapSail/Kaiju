@@ -16,7 +16,7 @@ constexpr uint16_t COLOR_PRIMARY = 0xD5B1;   // 70s tan #D2B48C
 constexpr uint16_t COLOR_SECONDARY = 0x9BCA; // brown #9C7A52
 constexpr uint16_t COLOR_BG = TFT_BLACK;
 
-const char *const MENU_ITEMS[] = {"WiFi", "BLE", "RF 433MHz", "NRF24 2.4GHz", "IR", "RFID", "Files", "Settings"};
+const char *const MENU_ITEMS[] = {"WiFi"};
 constexpr int MENU_COUNT = sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]);
 constexpr int WIFI_ITEM = 0;
 
@@ -40,7 +40,7 @@ constexpr uint32_t CH_DWELL_MS = 300;
 constexpr int BAR_BASE_Y = 108;
 constexpr int BAR_MAX_H = 72;
 
-enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun, WifiHsRun, WifiPortalRun, WifiCredsFiles, WifiCredsView, WifiAutoRun };
+enum class Screen { Menu, WifiMenu, WifiScan, WifiChannels, WifiSniff, WifiSpamSelect, WifiSpamText, WifiSpamRun, WifiDeauthSelect, WifiDeauthCheck, WifiDeauthRun, WifiKarmaRun, WifiHsRun, WifiPortalRun, WifiCredsFiles, WifiCredsView, WifiAutoRun };
 
 Screen screen = Screen::Menu;
 int selected = 0;
@@ -110,18 +110,6 @@ void drawWifiMenu() {
     }
     d.setTextColor(COLOR_SECONDARY, COLOR_BG);
     d.drawString("Backspace: back", 4, 124);
-}
-
-void drawPlaceholder() {
-    auto &d = M5Cardputer.Display;
-    d.fillScreen(COLOR_BG);
-    d.setTextSize(2);
-    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
-    d.drawString(MENU_ITEMS[selected], 8, 20);
-    d.setTextSize(1);
-    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
-    d.drawString("Not built yet.", 8, 60);
-    d.drawString("Backspace: back", 8, 110);
 }
 
 void drawWifiMessage(const char *msg) {
@@ -2711,17 +2699,7 @@ void loop() {
                 wifiToolSel = 0;
                 wifiToolTop = 0;
                 drawWifiMenu();
-            } else {
-                screen = Screen::Placeholder;
-                drawPlaceholder();
             }
-        }
-        break;
-
-    case Screen::Placeholder:
-        if (back) {
-            screen = Screen::Menu;
-            drawMenu();
         }
         break;
 

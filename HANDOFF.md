@@ -7,7 +7,7 @@ Last updated: 2026-11-03
 Kaiju is an upgraded Bruce firmware for the M5Stack Cardputer ADV, paired with a Hydra RF 424 (CC1101 433 MHz and NRF24 2.4 GHz). It has two parts:
 
 1. **Kaiju v1**: a fork of Bruce at the repo root. Trimmed menus, a 70s tan and beige theme, a boot splash reading "Kaiju / Cappy's Play", and only the working scripts.
-2. **Kaiju v2**: a from-scratch firmware in `kaiju-v2/`. WiFi tools come first, and the rest of the Bruce feature set follows.
+2. **Kaiju v2**: a from-scratch WiFi-only firmware in `kaiju-v2/`. The non-WiFi menu items were removed. Restore point: commit `1540fe3`.
 
 **Scope.** Active WiFi tools transmit only against networks the owner has marked as their own (`O` in the Deauth list, saved to `/kaiju/own_bssid.txt`). PMF-required networks are never attacked.
 
@@ -96,4 +96,4 @@ Last device-tested build: commit `2159712e`.
 
 ## Not started
 
-- BLE: nothing in Kaiju v2. The scope has not been decided.
+- Nothing outside WiFi in Kaiju v2. The non-WiFi items were removed, and the code is in commit `1540fe3`.
