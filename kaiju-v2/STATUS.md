@@ -16,12 +16,12 @@ Build: `python -m platformio run -e cardputer-adv -t upload` from this folder.
 | 8 | Karma: hops channels 1-13 (H toggles to a fixed channel). Answers each probe on the channel it came from, plus a beacon for each name | Built, awaiting device test |
 | 9 | Handshake capture: pick an AP from the list, save its beacon and all EAPOL frames to /pcap/hs_*.pcap. Counts M1-M4 and shows when crackable. D toggles deauth to force reconnects | Built, awaiting device test |
 | 10 | Evil portal: open network with the chosen SSID, DNS catches all names, captive redirect. Template: first .html in SD /PortalTemplates, else a plain built-in sign-in page. Each capture is saved to /BruceEvilCreds/<ssid>_creds.csv with session, SSID, channel, uptime, client IP, user agent, and browser time. Viewer: WiFi > Portal creds. No password checking against the real AP | Built, awaiting device test |
+| 11 | Sniffer alerts: deauth or disassoc frames above 20 in 10 s, and a second access point seen under an already-seen name (possible evil twin). Shown on the sniffer screen | Built, awaiting device test. Self-test: beacon spam from this device should trigger the twin alert |
 
 ## Need
 
 | Step | Feature | Notes |
 |---|---|---|
-| 11 | Deauth and beacon detection alerts on the sniffer | Defensive: flag a spike in deauth or unexpected beacons |
 | 12 | BLE tools | Placeholder today |
 | 13 | RF 433 MHz (CC1101) listen and spectrum | Port logic from Bruce (AGPL-3). Needs Hydra pin config |
 | 14 | NRF24 2.4 GHz tools | Placeholder today. Hydra pin config |

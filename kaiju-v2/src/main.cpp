@@ -427,6 +427,50 @@ void toggleRecording() {
     }
 }
 
+constexpr int BEACON_SEEN_MAX = 48;
+constexpr uint32_t SNIFF_DEAUTH_ALERT = 20;
+struct BeaconSeen {
+    uint8_t bssid[6];
+    char ssid[SPAM_SSID_MAX + 1];
+};
+BeaconSeen beaconSeen[BEACON_SEEN_MAX];
+std::atomic<int> beaconSeenCount{0};
+std::atomic<bool> twinAlert{false};
+char twinSsid[SPAM_SSID_MAX + 1] = "";
+uint32_t sniffDeauthPrev = 0;
+uint32_t sniffDeauthHist[10] = {};
+int sniffDeauthIdx = 0;
+uint32_t sniffDeauthSum = 0;
+bool sniffDeauthAlert = false;
+
+void noteBeacon(const wifi_promiscuous_pkt_t *pkt, uint32_t len) {
+    if (len < 40) return;
+    const uint8_t *bssid = &pkt->payload[16];
+    int count = beaconSeenCount.load(std::memory_order_relaxed);
+    for (int i = 0; i < count; i++) {
+        if (memcmp(beaconSeen[i].bssid, bssid, 6) == 0) return;
+    }
+    if (count >= BEACON_SEEN_MAX) return;
+    uint32_t end = len - 4;
+    uint32_t q = 36;
+    if (q + 2 > end || pkt->payload[q] != 0) return;
+    uint32_t n = pkt->payload[q + 1];
+    if (n == 0 || n > SPAM_SSID_MAX || q + 2 + n > end) return;
+    char ssid[SPAM_SSID_MAX + 1];
+    memcpy(ssid, &pkt->payload[q + 2], n);
+    ssid[n] = '\0';
+    for (int i = 0; i < count; i++) {
+        if (strcmp(beaconSeen[i].ssid, ssid) == 0) {
+            snprintf(twinSsid, sizeof(twinSsid), "%s", ssid);
+            twinAlert.store(true, std::memory_order_relaxed);
+            break;
+        }
+    }
+    memcpy(beaconSeen[count].bssid, bssid, 6);
+    snprintf(beaconSeen[count].ssid, sizeof(beaconSeen[count].ssid), "%s", ssid);
+    beaconSeenCount.store(count + 1, std::memory_order_release);
+}
+
 void onSniff(void *buf, wifi_promiscuous_pkt_type_t type) {
     sniffLive[SNIFF_TOTAL]++;
     if (type != WIFI_PKT_MISC && pcapActive.load(std::memory_order_acquire)) {
@@ -447,7 +491,10 @@ void onSniff(void *buf, wifi_promiscuous_pkt_type_t type) {
     switch ((pkt->payload[0] >> 4) & 0xF) {
     case 0x4: sniffLive[SNIFF_PROBE_REQ]++; break;
     case 0x5: sniffLive[SNIFF_PROBE_RESP]++; break;
-    case 0x8: sniffLive[SNIFF_BEACON]++; break;
+    case 0x8:
+        sniffLive[SNIFF_BEACON]++;
+        noteBeacon(pkt, pkt->rx_ctrl.sig_len);
+        break;
     case 0xA: sniffLive[SNIFF_DISASSOC]++; break;
     case 0xB: sniffLive[SNIFF_AUTH]++; break;
     case 0xC: sniffLive[SNIFF_DEAUTH]++; break;
@@ -490,6 +537,17 @@ void drawSniffer() {
         d.drawString(pcapMsg, 4, 80);
     }
     d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    if (twinAlert.load(std::memory_order_relaxed)) {
+        d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+        snprintf(line, sizeof(line), "ALERT twin AP: %.18s", twinSsid);
+        d.drawString(line, 4, 104);
+    }
+    if (sniffDeauthAlert) {
+        d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+        snprintf(line, sizeof(line), "ALERT %lu deauth/disassoc in 10s", (unsigned long)sniffDeauthSum);
+        d.drawString(line, 4, 114);
+    }
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
     d.drawString("Enter hop/lock  R rec  Bksp back", 4, 124);
 }
 
@@ -508,6 +566,13 @@ void startSniffer() {
     setAnalyzerChannel(sniffCh);
     sniffLastTotal = 0;
     sniffRate = 0;
+    sniffDeauthPrev = 0;
+    for (auto &v : sniffDeauthHist) v = 0;
+    sniffDeauthSum = 0;
+    sniffDeauthAlert = false;
+    beaconSeenCount.store(0, std::memory_order_relaxed);
+    twinAlert.store(false, std::memory_order_relaxed);
+    twinSsid[0] = '\0';
     sniffDwellStart = millis();
     sniffRateStart = sniffDwellStart;
     esp_wifi_set_promiscuous(true);
@@ -531,6 +596,13 @@ void tickSniffer() {
         sniffRate = total - sniffLastTotal;
         sniffLastTotal = total;
         sniffRateStart = now;
+        uint32_t attacks = sniffLive[SNIFF_DEAUTH] + sniffLive[SNIFF_DISASSOC];
+        sniffDeauthHist[sniffDeauthIdx] = attacks - sniffDeauthPrev;
+        sniffDeauthPrev = attacks;
+        sniffDeauthIdx = (sniffDeauthIdx + 1) % 10;
+        sniffDeauthSum = 0;
+        for (uint32_t v : sniffDeauthHist) sniffDeauthSum += v;
+        sniffDeauthAlert = sniffDeauthSum >= SNIFF_DEAUTH_ALERT;
         drawSniffer();
     }
 }
