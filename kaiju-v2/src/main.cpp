@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <M5Cardputer.h>
 #include <WiFi.h>
+#include "esp_wifi.h"
 
 namespace {
 
@@ -12,15 +13,35 @@ constexpr uint16_t COLOR_BG = TFT_BLACK;
 const char *const MENU_ITEMS[] = {"WiFi", "BLE", "RF 433MHz", "NRF24 2.4GHz", "IR", "RFID", "Files", "Settings"};
 constexpr int MENU_COUNT = sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]);
 constexpr int WIFI_ITEM = 0;
-constexpr int WIFI_VISIBLE_ROWS = 8;
 
-enum class Screen { Menu, Placeholder, WifiScan };
+const char *const WIFI_TOOLS[] = {"Scan networks", "Channel analyzer"};
+constexpr int WIFI_TOOL_COUNT = sizeof(WIFI_TOOLS) / sizeof(WIFI_TOOLS[0]);
+constexpr int WIFI_TOOL_SCAN = 0;
+constexpr int WIFI_TOOL_CHANNELS = 1;
+
+constexpr int WIFI_VISIBLE_ROWS = 8;
+constexpr int CH_FIRST = 1;
+constexpr int CH_LAST = 13;
+constexpr uint32_t CH_DWELL_MS = 300;
+constexpr int BAR_BASE_Y = 108;
+constexpr int BAR_MAX_H = 72;
+
+enum class Screen { Menu, Placeholder, WifiMenu, WifiScan, WifiChannels };
 
 Screen screen = Screen::Menu;
 int selected = 0;
+int wifiToolSel = 0;
 int netCount = 0;
 int netSel = 0;
 int netTop = 0;
+
+volatile uint32_t chFrames[CH_LAST + 1] = {};
+volatile uint32_t chBeacons[CH_LAST + 1] = {};
+uint32_t sweepFrames[CH_LAST + 1] = {};
+uint32_t sweepBeacons[CH_LAST + 1] = {};
+int chCurrent = CH_FIRST;
+int sweepCount = 0;
+uint32_t chDwellStart = 0;
 
 void drawSplash() {
     auto &d = M5Cardputer.Display;
@@ -50,6 +71,27 @@ void drawMenu() {
         }
         d.drawString(MENU_ITEMS[i], 10, y);
     }
+}
+
+void drawWifiMenu() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(2);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    d.drawString("WiFi", 8, 4);
+    d.setTextSize(1);
+    for (int i = 0; i < WIFI_TOOL_COUNT; i++) {
+        int y = 32 + i * 12;
+        if (i == wifiToolSel) {
+            d.fillRect(0, y - 1, d.width(), 11, COLOR_PRIMARY);
+            d.setTextColor(COLOR_BG, COLOR_PRIMARY);
+        } else {
+            d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+        }
+        d.drawString(WIFI_TOOLS[i], 10, y);
+    }
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString("Backspace: back", 4, 124);
 }
 
 void drawPlaceholder() {
@@ -85,8 +127,7 @@ void drawWifiScan() {
         int idx = netTop + row;
         if (idx >= netCount) break;
         int y = 18 + row * 12;
-        bool hl = idx == netSel;
-        if (hl) {
+        if (idx == netSel) {
             d.fillRect(0, y - 1, d.width(), 11, COLOR_PRIMARY);
             d.setTextColor(COLOR_BG, COLOR_PRIMARY);
         } else {
@@ -124,6 +165,101 @@ void moveWifiSelection(int delta) {
     drawWifiScan();
 }
 
+void onPromiscuous(void *buf, wifi_promiscuous_pkt_type_t type) {
+    if (type != WIFI_PKT_MGMT && type != WIFI_PKT_DATA) return;
+    auto *pkt = static_cast<wifi_promiscuous_pkt_t *>(buf);
+    int ch = pkt->rx_ctrl.channel;
+    if (ch < CH_FIRST || ch > CH_LAST) return;
+    chFrames[ch]++;
+    if (type == WIFI_PKT_MGMT && pkt->rx_ctrl.sig_len > 0 && (pkt->payload[0] >> 4) == 0x8) {
+        chBeacons[ch]++;
+    }
+}
+
+void setAnalyzerChannel(int ch) {
+    esp_wifi_set_channel(static_cast<uint8_t>(ch), WIFI_SECOND_CHAN_NONE);
+}
+
+void drawChannels() {
+    auto &d = M5Cardputer.Display;
+    d.fillScreen(COLOR_BG);
+    d.setTextSize(1);
+    d.setTextColor(COLOR_PRIMARY, COLOR_BG);
+    char header[40];
+    snprintf(header, sizeof(header), "Channels  sweep %d  Bksp: back", sweepCount);
+    d.drawString(header, 4, 4);
+
+    if (sweepCount == 0) {
+        d.drawString("Listening... first sweep in about 4s.", 4, 60);
+        return;
+    }
+
+    uint32_t maxFrames = 1;
+    int busiest = CH_FIRST;
+    for (int ch = CH_FIRST; ch <= CH_LAST; ch++) {
+        if (sweepFrames[ch] > maxFrames) maxFrames = sweepFrames[ch];
+        if (sweepFrames[ch] > sweepFrames[busiest]) busiest = ch;
+    }
+
+    for (int ch = CH_FIRST; ch <= CH_LAST; ch++) {
+        int x = 8 + (ch - CH_FIRST) * 17;
+        int h = static_cast<int>(sweepFrames[ch] * BAR_MAX_H / maxFrames);
+        if (h < 1 && sweepFrames[ch] > 0) h = 1;
+        if (h > 0) d.fillRect(x, BAR_BASE_Y - h, 12, h, COLOR_PRIMARY);
+        char label[4];
+        snprintf(label, sizeof(label), "%d", ch);
+        d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+        d.drawString(label, x + 2, BAR_BASE_Y + 4);
+    }
+
+    char footer[48];
+    snprintf(footer, sizeof(footer), "Busiest ch%d: %lu frames, %lu beacons", busiest,
+             (unsigned long)sweepFrames[busiest], (unsigned long)sweepBeacons[busiest]);
+    d.setTextColor(COLOR_SECONDARY, COLOR_BG);
+    d.drawString(footer, 4, 124);
+}
+
+void startChannelAnalyzer() {
+    WiFi.mode(WIFI_STA);
+    wifi_promiscuous_filter_t filter = {WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA};
+    esp_wifi_set_promiscuous_filter(&filter);
+    esp_wifi_set_promiscuous_rx_cb(&onPromiscuous);
+    for (int ch = 0; ch <= CH_LAST; ch++) {
+        chFrames[ch] = 0;
+        chBeacons[ch] = 0;
+        sweepFrames[ch] = 0;
+        sweepBeacons[ch] = 0;
+    }
+    sweepCount = 0;
+    chCurrent = CH_FIRST;
+    setAnalyzerChannel(chCurrent);
+    esp_wifi_set_promiscuous(true);
+    chDwellStart = millis();
+    drawChannels();
+}
+
+void stopChannelAnalyzer() {
+    esp_wifi_set_promiscuous(false);
+}
+
+void tickChannelAnalyzer() {
+    if (millis() - chDwellStart < CH_DWELL_MS) return;
+    chDwellStart = millis();
+    chCurrent++;
+    if (chCurrent > CH_LAST) {
+        chCurrent = CH_FIRST;
+        for (int ch = CH_FIRST; ch <= CH_LAST; ch++) {
+            sweepFrames[ch] = chFrames[ch];
+            sweepBeacons[ch] = chBeacons[ch];
+            chFrames[ch] = 0;
+            chBeacons[ch] = 0;
+        }
+        sweepCount++;
+        drawChannels();
+    }
+    setAnalyzerChannel(chCurrent);
+}
+
 bool wordHas(const std::vector<char> &word, char c) {
     for (char w : word) {
         if (tolower(w) == c) return true;
@@ -144,6 +280,7 @@ void setup() {
 
 void loop() {
     M5Cardputer.update();
+    if (screen == Screen::WifiChannels) tickChannelAnalyzer();
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) return;
 
     auto &ks = M5Cardputer.Keyboard.keysState();
@@ -161,8 +298,9 @@ void loop() {
             drawMenu();
         } else if (ks.enter) {
             if (selected == WIFI_ITEM) {
-                screen = Screen::WifiScan;
-                scanWifi();
+                screen = Screen::WifiMenu;
+                wifiToolSel = 0;
+                drawWifiMenu();
             } else {
                 screen = Screen::Placeholder;
                 drawPlaceholder();
@@ -177,17 +315,46 @@ void loop() {
         }
         break;
 
+    case Screen::WifiMenu:
+        if (back) {
+            screen = Screen::Menu;
+            drawMenu();
+        } else if (up) {
+            wifiToolSel = (wifiToolSel + WIFI_TOOL_COUNT - 1) % WIFI_TOOL_COUNT;
+            drawWifiMenu();
+        } else if (down) {
+            wifiToolSel = (wifiToolSel + 1) % WIFI_TOOL_COUNT;
+            drawWifiMenu();
+        } else if (ks.enter) {
+            if (wifiToolSel == WIFI_TOOL_SCAN) {
+                screen = Screen::WifiScan;
+                scanWifi();
+            } else if (wifiToolSel == WIFI_TOOL_CHANNELS) {
+                screen = Screen::WifiChannels;
+                startChannelAnalyzer();
+            }
+        }
+        break;
+
     case Screen::WifiScan:
         if (back) {
             WiFi.scanDelete();
-            screen = Screen::Menu;
-            drawMenu();
+            screen = Screen::WifiMenu;
+            drawWifiMenu();
         } else if (up) {
             moveWifiSelection(-1);
         } else if (down) {
             moveWifiSelection(1);
         } else if (ks.enter) {
             scanWifi();
+        }
+        break;
+
+    case Screen::WifiChannels:
+        if (back) {
+            stopChannelAnalyzer();
+            screen = Screen::WifiMenu;
+            drawWifiMenu();
         }
         break;
     }
