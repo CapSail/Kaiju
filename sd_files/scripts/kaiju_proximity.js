@@ -1,29 +1,22 @@
-// Kaiju Proximity: a spy gadget, with Kaiju as the host.
-// Shows the phones (Bluetooth) and Wi-Fi networks around you: how many are
-// close, near and far, and roughly how far away each one is.
-// Distances are a rough guide from signal strength. Walls and bodies change
-// them a lot, so read them as "about this far", not a measurement.
+// Kaiju Proximity: a simple Bluetooth radar, with Kaiju as the host.
 //
-// Keys:
-//   ; , . /   move the cursor up and down
-//   m or Select  mark the highlighted target as yours (it leaves the list and
-//                the counts). Marks are saved to /scripts/ghosts.txt
-//   h         show or hide the targets you've marked
-//   Esc       quit
+// Step 1, PICK: a short Bluetooth scan lists the devices around you.
+//   ; or , and . or /    move up and down
+//   Select               mark the device as yours (press again to unmark)
+//   Select on START      go to the radar
 //
-// The top right shows scan counts and the last key read. If something goes
-// wrong with a scan, the error shows at the bottom.
+// Step 2, RADAR: no buttons. It shows how many devices are close, near and
+//   far, with a heat bar for each one. Devices you marked are left out.
+//   Esc quits. Hold it for a second: each scan blocks the keys briefly.
 //
-// Privacy: devices are kept in memory only, except the ones you mark as
-// yours. Names show on screen so you can tell what's around you. Full
-// addresses never appear. Many phones change their Bluetooth address from
-// time to time, so a marked phone can reappear as a new entry. Mark it again
-// if that happens.
+// Distances are a rough guide from signal strength, not a measurement.
+// Phones change their Bluetooth address from time to time, so a marked phone
+// can come back as a new device. Mark it again if that happens.
+// Marks are saved to /scripts/ghosts.txt. Full addresses are never shown.
 
 var display = require('display');
 var keyboard = require('keyboard');
 var ble = require('ble');
-var wifi = require('wifi');
 var storage = require('storage');
 
 var SW = display.width();
@@ -41,13 +34,13 @@ var cHot = display.color(240, 70, 30);
 var cBar = display.color(70, 46, 26);
 
 var CLOSE_DBM = -55;    // at or above this: close
-var NEAR_DBM = -70;     // at or above this (and below close): near, else far
-var STALE_MS = 20000;   // forget a target not seen for 20 seconds
-var BLE_SECS = 1;       // Bluetooth scan length
-var WIFI_EVERY = 3;     // Wi-Fi scan every 3rd cycle, it's slower
+var NEAR_DBM = -70;     // at or above this: near, below it: far
+var STALE_MS = 20000;   // a device not heard for 20 seconds leaves the radar
+var PICK_ROUNDS = 5;    // pick screen: five scans, about 10 seconds
+var SCAN_SECS = 2;      // one Bluetooth scan
 var GHOST_FILE = '/scripts/ghosts.txt';
-var LIST_TOP = 56;      // first row of the target list
-var ROW_H = 9;
+var LIST_TOP = 38;      // first row of the list
+var ROW_H = 11;
 var LIST_ROWS = 7;
 
 // Kaiju's head, host of the show. Each run is [x, y, width] in a 96x88 box.
@@ -55,21 +48,11 @@ var HEAD_X = 130;
 var HEAD_Y = 14;
 var HEAD_RUNS = [17,5,2,17,6,3,18,7,4,18,8,6,19,9,6,20,10,7,20,11,9,21,12,9,21,13,11,22,14,12,7,15,3,22,15,13,8,16,4,23,16,16,9,17,6,23,17,22,10,18,7,24,18,25,11,19,9,25,19,27,12,20,10,25,20,30,13,21,45,13,22,48,14,23,50,15,24,51,16,25,53,3,26,1,17,26,54,4,27,5,18,27,56,5,28,9,19,28,57,6,29,73,8,30,73,9,31,74,10,32,74,11,33,75,13,34,75,14,35,75,15,36,75,16,37,75,15,38,76,7,39,84,3,40,88,5,41,85,8,42,82,10,43,79,12,44,77,15,45,72,16,46,68,17,47,64,17,48,61,17,49,58,17,50,56,17,51,54,17,52,52,18,53,49,18,54,47,18,55,45,18,56,43,19,57,41,20,58,38,21,59,36,22,60,33,23,61,31,24,62,28,25,63,26,28,64,21,33,65,12,37,66,5];
 
-// Memory only: counted targets (marked ones are never counted).
-var devices = {};       // address -> { rssi, seen, name }
-var nets = {};          // BSSID -> { rssi, seen, name }
-// Memory only: everything seen, for the list.
-var seenBle = {};
-var seenNet = {};
 
-var ghosts = loadGhosts();  // address -> label, from the SD card
-var showHidden = false;
-var cursor = 0;
-var cycle = 0;
+var ghosts = loadGhosts();  // address -> label, the devices marked as yours
+var devices = {};           // radar: address -> { rssi, seen, name }
 var lastBle = 0;
-var lastWifi = 0;
 var lastError = '';
-var lastKeyName = '';
 var lastKey = '';
 var lastSel = false;
 
@@ -106,6 +89,20 @@ function saveGhosts() {
   }
 }
 
+function isMarked(addr) {
+  return ghosts[addr] !== undefined;
+}
+
+function toggleMine(it) {
+  if (isMarked(it.addr)) {
+    delete ghosts[it.addr];
+  } else {
+    ghosts[it.addr] = it.label;
+    delete devices[it.addr];
+  }
+  saveGhosts();
+}
+
 function bucket(rssi) {
   if (rssi >= CLOSE_DBM) return 0;
   if (rssi >= NEAR_DBM) return 1;
@@ -117,21 +114,12 @@ function metres(rssi) {
   return Math.pow(10, (-59 - rssi) / 25);
 }
 
-function rounded(m) {
-  if (m < 10) return Math.round(m * 10) / 10;
-  return Math.round(m);
-}
-
-function fmtM(rssi) {
-  return '~' + rounded(metres(rssi)) + 'm';
-}
-
 function remember(map, key, rssi, t, name) {
   var e = map[key];
   if (e === undefined) {
     map[key] = { rssi: rssi, seen: t, name: name };
   } else {
-    // smooth so one loud or quiet reading doesn't jump the count
+    // smooth so one loud or quiet reading doesn't make the bars jump
     e.rssi = e.rssi * 0.6 + rssi * 0.4;
     e.seen = t;
     if (name) e.name = name;
@@ -144,127 +132,94 @@ function prune(map, t) {
   }
 }
 
-function scanBle(t) {
-  var found = [];
-  try {
-    found = ble.scan(BLE_SECS);
-  } catch (e) {
-    lastError = 'ble: ' + String(e).substring(0, 14);
-    return;
-  }
-  lastBle = found.length;
-  for (var i = 0; i < found.length; i++) {
-    var addr = String(found[i].address).toLowerCase();
-    var name = String(found[i].name || '');
-    if (name === '<unknown>') name = '';
-    remember(seenBle, addr, found[i].rssi, t, name);
-    if (ghosts[addr] === undefined) remember(devices, addr, found[i].rssi, t, name);
-  }
-  prune(seenBle, t);
-  prune(devices, t);
-}
-
-function scanWifi(t) {
-  var list = [];
-  try {
-    list = wifi.scan();
-  } catch (e) {
-    lastError = 'wifi: ' + String(e).substring(0, 13);
-    return;
-  }
-  lastWifi = list.length;
-  for (var i = 0; i < list.length; i++) {
-    var mac = String(list[i].MAC).toLowerCase();
-    var ssid = String(list[i].SSID || '');
-    remember(seenNet, mac, list[i].RSSI, t, ssid);
-    if (ghosts[mac] === undefined) remember(nets, mac, list[i].RSSI, t, ssid);
-  }
-  prune(seenNet, t);
-  prune(nets, t);
-}
-
-// Counts and the distance range for each band, over the targets that aren't marked.
-function bandSummary() {
-  var out = [
-    { n: 0, lo: 0, hi: 0 },
-    { n: 0, lo: 0, hi: 0 },
-    { n: 0, lo: 0, hi: 0 }
-  ];
-  var maps = [devices, nets];
-  for (var mi = 0; mi < maps.length; mi++) {
-    for (var k in maps[mi]) {
-      var r = maps[mi][k].rssi;
-      var b = bucket(r);
-      var d = metres(r);
-      var s = out[b];
-      if (s.n === 0) {
-        s.lo = d;
-        s.hi = d;
-      } else {
-        if (d < s.lo) s.lo = d;
-        if (d > s.hi) s.hi = d;
-      }
-      s.n++;
-    }
-  }
-  return out;
-}
-
-// The list: every target seen, strongest first.
-function buildList() {
-  var items = [];
-  for (var a in seenBle) {
-    items.push({ addr: a, kind: 'BT', name: seenBle[a].name, rssi: seenBle[a].rssi });
-  }
-  for (var m in seenNet) {
-    items.push({ addr: m, kind: 'AP', name: seenNet[m].name, rssi: seenNet[m].rssi });
-  }
-  items.sort(function (x, y) { return y.rssi - x.rssi; });
-  var out = [];
-  for (var i = 0; i < items.length; i++) {
-    var it = items[i];
-    it.ghost = ghosts[it.addr] !== undefined;
-    if (it.ghost && !showHidden) continue;
-    it.label = it.name ? it.name : it.kind + ' ' + it.addr.substring(it.addr.length - 5);
-    out.push(it);
-  }
-  return out;
-}
-
-function toggleMine(it) {
-  if (ghosts[it.addr] !== undefined) {
-    delete ghosts[it.addr];
-  } else {
-    ghosts[it.addr] = it.label;
-    delete devices[it.addr];
-    delete nets[it.addr];
-  }
-  saveGhosts();
+function labelOf(addr, name) {
+  return name ? name : 'BT ' + addr.substring(addr.length - 5);
 }
 
 function shorten(s, n) {
   return s.length > n ? s.substring(0, n) : s;
 }
 
-// signal -95..-30 maps to a bar of 0..20 pixels
-function barLen(rssi) {
-  var v = Math.round((rssi + 95) * 20 / 65);
-  if (v < 1) v = 1;
-  if (v > 20) v = 20;
-  return v;
+// One Bluetooth scan. Adds what it hears to the map.
+function scanInto(map, t, skipMarked) {
+  var found = [];
+  try {
+    found = ble.scan(SCAN_SECS);
+  } catch (e) {
+    lastError = 'bluetooth error';
+    return;
+  }
+  lastError = '';
+  lastBle = found.length;
+  for (var i = 0; i < found.length; i++) {
+    var addr = String(found[i].address).toLowerCase();
+    if (skipMarked && isMarked(addr)) continue;
+    var name = String(found[i].name || '');
+    if (name === '<unknown>') name = '';
+    remember(map, addr, found[i].rssi, t, name);
+  }
 }
 
-// 0 = something close, 1 = something near, 2 = only far things, -1 = nothing
-function levelOf(sum) {
-  if (sum[0].n > 0) return 0;
-  if (sum[1].n > 0) return 1;
-  if (sum[2].n > 0) return 2;
+// Everything found in the pick scan, strongest first.
+function pickList(found) {
+  var items = [];
+  for (var a in found) {
+    items.push({ addr: a, rssi: found[a].rssi, label: labelOf(a, found[a].name), mine: isMarked(a) });
+  }
+  items.sort(function (x, y) { return y.rssi - x.rssi; });
+  return items;
+}
+
+// The radar: marked devices are never in the map, strongest first.
+function radarList() {
+  var items = [];
+  for (var a in devices) {
+    items.push({ addr: a, rssi: devices[a].rssi, label: labelOf(a, devices[a].name) });
+  }
+  items.sort(function (x, y) { return y.rssi - x.rssi; });
+  return items;
+}
+
+// How many are close, near and far.
+function countsOf(items) {
+  var n = [0, 0, 0];
+  for (var i = 0; i < items.length; i++) n[bucket(items[i].rssi)]++;
+  return n;
+}
+
+// 0 = something close, 1 = near, 2 = only far, -1 = nothing
+function levelOf(n) {
+  if (n[0] > 0) return 0;
+  if (n[1] > 0) return 1;
+  if (n[2] > 0) return 2;
   return -1;
+}
+
+// A heat bar: 12 segments, lit from the left up to how close the signal is.
+// The first segments are gold (far end), then orange, then red (close end).
+function heatBar(x, y, rssi, selected, ghost) {
+  var lit = Math.round((rssi + 95) * 12 / 65);
+  if (lit < 1) lit = 1;
+  if (lit > 12) lit = 12;
+  for (var s = 0; s < 12; s++) {
+    var on = s < lit;
+    var col;
+    if (selected) {
+      col = on ? cNight : cTan;
+    } else if (ghost) {
+      col = on ? cDim : cBar;
+    } else if (!on) {
+      col = cBar;
+    } else {
+      col = s < 5 ? cGold : s < 9 ? cFire : cHot;
+    }
+    display.drawFillRect(x + s * 5, y, 4, 6, col);
+  }
 }
 
 // The head, with an expression that follows the nearest target. Brows and
 // the mouth are cut out in the night color so they show on the head.
-function drawHead(level) {
+function drawHead(level, override) {
   var hx = HEAD_X;
   var hy = HEAD_Y;
   for (var i = 0; i < HEAD_RUNS.length; i += 3) {
@@ -308,6 +263,7 @@ function drawHead(level) {
     display.drawFillRect(hx + 57, hy + 30, 7, 2, cNight);
     display.drawFillRect(hx + 62, hy + 49, 24, 2, cNight);
   }
+  if (override) label = override;
   display.setTextSize(1);
   display.setTextColor(cGold);
   display.drawString(label, hx + 14, hy + 90);
@@ -320,183 +276,164 @@ function briefing(level) {
   return 'ALL CLEAR';
 }
 
-function bandLine(name, s) {
-  if (s.n === 0) return name + ' 0';
-  return name + ' ' + s.n + '  ' + rounded(s.lo) + '-' + rounded(s.hi) + 'm';
-}
-
-// A heat bar: 12 segments, lit from the left up to how close the signal is.
-// The first segments are gold (far end), then orange, then red (close end).
-function heatBar(x, y, rssi, selected, ghost) {
-  var lit = Math.round((rssi + 95) * 12 / 65);
-  if (lit < 1) lit = 1;
-  if (lit > 12) lit = 12;
-  for (var s = 0; s < 12; s++) {
-    var on = s < lit;
-    var col;
-    if (selected) {
-      col = on ? cNight : cTan;
-    } else if (ghost) {
-      col = on ? cDim : cBar;
-    } else if (!on) {
-      col = cBar;
-    } else {
-      col = s < 5 ? cGold : s < 9 ? cFire : cHot;
-    }
-    display.drawFillRect(x + s * 5, y, 4, 6, col);
-  }
-}
-
-function draw(list, sum, scanning) {
+function frame(title) {
   display.fill(cNight);
   display.setTextSize(1);
-
-  // monitor frame and title
   display.drawRect(1, 1, SW - 2, SH - 2, cDim);
   display.setTextColor(cGold);
-  display.drawString("CLASSIFIED // PROXIMITY", 6, 5);
+  display.drawString(title, 6, 5);
   display.drawFillRect(4, 15, 114, 1, cGold);
-  display.setTextColor(scanning ? cFire : cGold);
-  display.drawString(scanning ? "LIVE" : "HOLD", 180, 5);
+}
 
-  // one-line summary: how many close, near and far
-  display.setTextColor(cGold);
-  display.drawString("close " + sum[0].n + "  near " + sum[1].n, 6, 18);
+function footer(text) {
+  display.setTextColor(lastError ? cFire : cTan);
+  display.drawString(lastError ? lastError : text, 6, SH - 11);
+}
+
+function drawScanning(round) {
+  frame('CLASSIFIED // PROXIMITY');
+  display.setTextColor(cFire);
+  display.drawString('scanning ' + round + ' of ' + PICK_ROUNDS, 6, 30);
   display.setTextColor(cTan);
-  display.drawString("far " + sum[2].n, 6, 27);
+  display.drawString('about 10 seconds', 6, 42);
+  drawHead(2, 'scanning');
+}
 
-  // nearest target, as the lock
-  display.setTextColor(cCream);
-  if (list.length > 0 && !list[0].ghost) {
-    display.drawString("LOCK " + shorten(list[0].label, 9) + " " + fmtM(list[0].rssi), 6, 36);
-  } else {
-    display.drawString("LOCK none", 6, 36);
-  }
-  display.setTextColor(cDim);
-  display.drawString("TARGETS", 6, 45);
-
-  // the target list: a heat bar per device, closest on top
-  if (list.length === 0) {
-    display.setTextColor(cTan);
-    display.drawString(scanning ? "nothing in range yet" : "paused: nothing listed", 6, LIST_TOP);
-  }
-  var top = 0;
-  if (cursor >= LIST_ROWS) top = cursor - LIST_ROWS + 1;
-  for (var i = 0; i < LIST_ROWS && top + i < list.length; i++) {
+function drawPick(list, cursor) {
+  frame('CLASSIFIED // PROXIMITY');
+  display.setTextColor(cTan);
+  display.drawString('Select marks yours', 6, 19);
+  display.drawString('then START', 6, 28);
+  var rows = list.length + 1;   // row 0 is START
+  var top = cursor >= LIST_ROWS ? cursor - LIST_ROWS + 1 : 0;
+  for (var i = 0; i < LIST_ROWS && top + i < rows; i++) {
     var idx = top + i;
-    var it = list[idx];
     var y = LIST_TOP + i * ROW_H;
-    var b = bucket(it.rssi);
-    var rowColor = b === 0 ? cFire : b === 1 ? cGold : cTan;
-    if (it.ghost) rowColor = cDim;
-    if (idx === cursor) {
+    var selected = idx === cursor;
+    if (selected) {
       display.drawFillRect(3, y - 1, 121, ROW_H, cGold);
       display.setTextColor(cNight);
     } else {
-      display.setTextColor(rowColor);
+      display.setTextColor(idx === 0 ? cFire : list[idx - 1].mine ? cDim : cTan);
     }
-    var prefix = it.ghost ? "x " : "";
-    display.drawString(prefix + shorten(it.label, 8), 6, y);
-    heatBar(62, y + 1, it.rssi, idx === cursor, it.ghost);
+    if (idx === 0) {
+      display.drawString('START >>', 6, y);
+      continue;
+    }
+    var it = list[idx - 1];
+    display.drawString((it.mine ? 'x ' : '') + shorten(it.label, 8), 6, y);
+    heatBar(62, y + 1, it.rssi, selected, it.mine);
   }
-
-  // Kaiju the host: head, expression, briefing
-  drawHead(levelOf(sum));
-  display.setTextColor(cFire);
-  display.drawString(briefing(levelOf(sum)), 128, 113);
-
-  // footer
-  display.setTextColor(cTan);
-  if (lastError) {
-    display.setTextColor(cFire);
-    display.drawString(shorten(lastError, 26), 6, SH - 11);
-  } else {
-    display.drawString("M MARK  H SHOW  ESC QUIT", 6, SH - 11);
+  if (list.length === 0) {
+    display.setTextColor(cTan);
+    display.drawString('nothing heard', 6, LIST_TOP + ROW_H);
   }
-  display.setTextColor(cDim);
-  display.drawString("b" + lastBle + " w" + lastWifi + " k:" + lastKeyName, 150, SH - 11);
+  drawHead(2, 'choose');
+  footer('ESC quit');
 }
 
+function drawRadar(list, n) {
+  frame('KAIJU PROXIMITY');
+  display.setTextColor(cFire);
+  display.drawString('LIVE', 190, 5);
+  display.setTextColor(cGold);
+  display.drawString('close ' + n[0] + '  near ' + n[1], 6, 19);
+  display.setTextColor(cTan);
+  display.drawString('far ' + n[2], 6, 28);
+  if (list.length === 0) {
+    display.setTextColor(cTan);
+    display.drawString('nothing in range yet', 6, LIST_TOP);
+  }
+  for (var i = 0; i < LIST_ROWS && i < list.length; i++) {
+    var it = list[i];
+    var y = LIST_TOP + i * ROW_H;
+    var b = bucket(it.rssi);
+    display.setTextColor(b === 0 ? cFire : b === 1 ? cGold : cTan);
+    display.drawString(shorten(it.label, 8), 6, y);
+    heatBar(62, y + 1, it.rssi, false, false);
+  }
+  var lvl = levelOf(n);
+  drawHead(lvl);
+  display.setTextColor(cFire);
+  display.drawString(briefing(lvl), 128, 113);
+  footer('hold ESC to quit');
+}
+
+// Reads one key press per press, not on every loop it's held.
 function readKey() {
   var k = keyboard.getKeysPressed();
   var key = k.length > 0 ? k[0] : '';
   var edge = key !== '' && key !== lastKey;
   lastKey = key;
-  if (edge) lastKeyName = key;
   return edge ? key : '';
 }
 
-function handleInput(list) {
-  var acted = false;
-  var key = readKey();
+function selEdge() {
   var sel = keyboard.getSelPress();
-  var selEdge = sel && !lastSel;
+  var edge = sel && !lastSel;
   lastSel = sel;
-
-  if (key === ';' || key === ',') {
-    if (cursor > 0) cursor--;
-    acted = true;
-  } else if (key === '.' || key === '/') {
-    if (cursor < list.length - 1) cursor++;
-    acted = true;
-  } else if (key === 'm' || key === 'M' || selEdge) {
-    if (list.length > 0) toggleMine(list[cursor]);
-    acted = true;
-  } else if (key === 'h' || key === 'H') {
-    showHidden = !showHidden;
-    cursor = 0;
-    acted = true;
-  }
-  return acted;
+  return edge;
 }
 
-// Scanning pauses for a few seconds after each key, so the keys respond at once.
-var HOLD_MS = 3000;
-var lastInputAt = -100000;
-var lastSig = '';
-
-function signature(list, sum, level, scanning) {
-  var s = cursor + '|' + showHidden + '|' + level + '|' + scanning + '|' + lastBle + '|' + lastWifi;
-  s += '|' + lastKeyName + '|' + lastError + '|' + sum[0].n + sum[1].n + sum[2].n;
-  for (var i = 0; i < list.length && i < LIST_ROWS; i++) {
-    s += '|' + list[i].label + ':' + Math.round(list[i].rssi / 3) + (list[i].ghost ? 'g' : '');
+// Step 1. Returns true when START is chosen, false on Esc.
+function pick() {
+  var found = {};
+  for (var round = 1; round <= PICK_ROUNDS; round++) {
+    drawScanning(round);
+    scanInto(found, now(), false);
+    if (keyboard.getEscPress()) return false;
   }
-  return s;
-}
-
-function main() {
-  // one scan at start, so there's something to look at straight away
-  scanBle(now());
-  scanWifi(now());
-  var list = buildList();
-  var sum = bandSummary();
-  draw(list, sum, true);
-  lastSig = signature(list, sum, levelOf(sum), true);
+  var list = pickList(found);
+  var cursor = list.length > 0 ? 1 : 0;
+  var lastSig = '';
   while (true) {
-    if (keyboard.getEscPress()) break;
-
-    var t0 = now();
-    if (handleInput(buildList())) lastInputAt = t0;
-    var scanning = now() - lastInputAt > HOLD_MS;
-
-    if (scanning) {
-      scanBle(now());
-      if (cycle % WIFI_EVERY === 0) scanWifi(now());
-      cycle++;
-      if (lastError && lastError.indexOf('ble') === 0 && lastBle > 0) lastError = '';
+    if (keyboard.getEscPress()) return false;
+    var key = readKey();
+    var sel = selEdge();
+    if (key === ';' || key === ',') {
+      if (cursor > 0) cursor--;
+    } else if (key === '.' || key === '/') {
+      if (cursor < list.length) cursor++;
     }
-
-    list = buildList();
-    if (cursor >= list.length) cursor = Math.max(0, list.length - 1);
-    sum = bandSummary();
-    var level = levelOf(sum);
-    var sig = signature(list, sum, level, scanning);
+    if (sel) {
+      if (cursor === 0) return true;
+      toggleMine(list[cursor - 1]);
+      list = pickList(found);
+    }
+    var sig = cursor + '|' + lastError;
+    for (var i = 0; i < list.length; i++) sig += '|' + list[i].label + list[i].mine;
     if (sig !== lastSig) {
-      draw(list, sum, scanning);
+      drawPick(list, cursor);
       lastSig = sig;
     }
     delay(30);
   }
+}
+
+// Step 2. No buttons: scans until Esc.
+function radar() {
+  var lastSig = '';
+  while (true) {
+    if (keyboard.getEscPress()) return;
+    scanInto(devices, now(), true);
+    prune(devices, now());
+    var list = radarList();
+    var n = countsOf(list);
+    var sig = n.join(',') + '|' + lastError;
+    for (var i = 0; i < list.length && i < LIST_ROWS; i++) {
+      sig += '|' + list[i].label + Math.round(list[i].rssi / 3);
+    }
+    if (sig !== lastSig) {
+      drawRadar(list, n);
+      lastSig = sig;
+    }
+    delay(20);
+  }
+}
+
+function main() {
+  if (!pick()) return;
+  radar();
 }
 
 main();
