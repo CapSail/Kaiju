@@ -45,7 +45,7 @@ function newGame() {
     fireCool: 0,
     fireLeft: 0,
     lastFireLen: 0,
-    nextGap: 40,
+    nextGap: 80,
     over: false
   };
   display.fill(cSky);
@@ -156,7 +156,7 @@ function step() {
   var lastB = s.blds.length > 0 ? s.blds[s.blds.length - 1] : null;
   if (!lastB || lastB.x + lastB.w < SW - s.nextGap) {
     spawnBuilding(SW);
-    s.nextGap = 30 + Math.floor(Math.random() * 40);
+    s.nextGap = 60 + Math.floor(Math.random() * 40);  // room to land: the Kaiju is 34 px wide
   }
 
   // 5. collision: a building overlaps the Kaiju and its feet are below the roof
