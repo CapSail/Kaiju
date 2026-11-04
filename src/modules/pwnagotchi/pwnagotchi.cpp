@@ -2,6 +2,7 @@
 #include "../wifi/sniffer.h"
 #include "../wifi/wifi_atks.h"
 #include "core/mykeyboard.h"
+#include "core/sd_functions.h"
 #include "core/wifi/wifi_common.h"
 #include "esp_err.h"
 #include "spam.h"
@@ -93,6 +94,17 @@ static void loadOwnedAps() {
     }
     f.close();
     Serial.printf("Kaijugotchi: %d owned APs\n", (int)ownedAps.size());
+}
+
+// Open the captured handshakes folder in Bruce's file browser
+static void openCaptures() {
+    FS *fs = isLittleFS ? static_cast<FS *>(&LittleFS) : static_cast<FS *>(&SD);
+    if (!fs->exists("/BrucePCAP/handshakes")) {
+        displayTextLine("No captures yet");
+        delay(1000);
+        return;
+    }
+    loopSD(*fs, false, "*", "/BrucePCAP/handshakes");
 }
 
 // Count how many (non-stale) beacons are on a given channel
@@ -417,6 +429,7 @@ void brucegotchi_start() {
         if (check(SelPress)) {
             String channel_status = use_all_channels ? "All Ch: ON" : "All Ch: OFF";
             options = {
+                {"Captures", openCaptures},
                 {"Find friends", yield},
                 {"Pwngrid spam", send_pwnagotchi_beacon_main},
                 {channel_status.c_str(), toggle_all_channels},
