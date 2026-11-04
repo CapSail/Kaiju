@@ -2,6 +2,16 @@
 #include "core/display.h"
 #include "core/settings.h"
 #include "core/utils.h"
+#if !defined(LITE_VERSION) && !defined(DISABLE_INTERPRETER)
+#include "core/sd_functions.h"
+#include "modules/bjs_interpreter/interpreter.h"
+// Runs a JS script from the SD card. The lab scripts live in /scripts/<folder>/.
+static void runSdScript(const char *path) {
+    if (!setupSdCard()) { displayError("SD card not found", true); return; }
+    if (!SD.exists(path)) { displayError("Script not on SD card", true); return; }
+    run_bjs_script_headless(SD, String(path));
+}
+#endif
 #include "modules/ir/TV-B-Gone.h"
 #include "modules/ir/custom_ir.h"
 #include "modules/ir/ir_jammer.h"
@@ -18,6 +28,9 @@ void IRMenu::optionsMenu() {
         {"IR Read",   [=]() { IrRead(); }       },
 #if !defined(LITE_VERSION)
         {"IR Jammer", startIrJammer             }, // Simple frequency-adjustable jammer
+#endif
+#if !defined(LITE_VERSION) && !defined(DISABLE_INTERPRETER)
+        {"NEC Code Sweep", []() { runSdScript("/scripts/ir/ir_brute.js"); }},
 #endif
         {"Config",    [this]() { configMenu(); }},
     };

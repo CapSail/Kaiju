@@ -2,6 +2,16 @@
 #include "core/display.h"
 #include "core/settings.h"
 #include "core/utils.h"
+#if !defined(LITE_VERSION) && !defined(DISABLE_INTERPRETER)
+#include "core/sd_functions.h"
+#include "modules/bjs_interpreter/interpreter.h"
+// Runs a JS script from the SD card. The lab scripts live in /scripts/<folder>/.
+static void runSdScript(const char *path) {
+    if (!setupSdCard()) { displayError("SD card not found", true); return; }
+    if (!SD.exists(path)) { displayError("Script not on SD card", true); return; }
+    run_bjs_script_headless(SD, String(path));
+}
+#endif
 #include "modules/rf/record.h"
 #include "modules/rf/rf_bruteforce.h"
 #include "modules/rf/rf_jammer.h"
@@ -29,6 +39,9 @@ void RFMenu::optionsMenu() {
 #endif
         {"Bruteforce",      rf_bruteforce             }, // dev_eclipse
         {"Jammer",          [=]() { RFJammer(true); } },
+#endif
+#if !defined(LITE_VERSION) && !defined(DISABLE_INTERPRETER)
+        {"433 Code Sweep",  []() { runSdScript("/scripts/rf/rf_brute.js"); }},
 #endif
         {"Config",          [this]() { configMenu(); }},
     };

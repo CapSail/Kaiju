@@ -2,6 +2,16 @@
 #include "core/display.h"
 #include "core/settings.h"
 #include "core/utils.h"
+#if !defined(LITE_VERSION) && !defined(DISABLE_INTERPRETER)
+#include "core/sd_functions.h"
+#include "modules/bjs_interpreter/interpreter.h"
+// Runs a JS script from the SD card. The lab scripts live in /scripts/<folder>/.
+static void runSdScript(const char *path) {
+    if (!setupSdCard()) { displayError("SD card not found", true); return; }
+    if (!SD.exists(path)) { displayError("Script not on SD card", true); return; }
+    run_bjs_script_headless(SD, String(path));
+}
+#endif
 #include "core/wifi/webInterface.h"
 #include "core/wifi/wg.h"
 #include "core/wifi/wifi_common.h"
@@ -104,6 +114,9 @@ void WifiMenu::optionsMenu() {
     options.push_back({"Wireguard", wg_setup});
     options.push_back({"Responder", responder});
     options.push_back({"Kaijugotchi", brucegotchi_start});
+#if !defined(LITE_VERSION) && !defined(DISABLE_INTERPRETER)
+    options.push_back({"WiFi Dictionary", []() { runSdScript("/scripts/wifi/wifi_brute.js"); }});
+#endif
     options.push_back({"WiFi Pass Recovery", wifi_recover_menu});
 #endif
 
