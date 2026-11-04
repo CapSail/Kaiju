@@ -52,7 +52,8 @@ var HEAD_RUNS = [17,5,2,17,6,3,18,7,4,18,8,6,19,9,6,20,10,7,20,11,9,21,12,9,21,1
 var ghosts = loadGhosts();  // address -> label, the devices marked as yours
 var devices = {};           // radar: address -> { rssi, seen, name }
 var lastBle = 0;
-var lastError = '';
+var lastError = '';   // from the last scan
+var saveError = '';  // from the last save
 var lastKey = '';
 var lastSel = false;
 
@@ -82,11 +83,14 @@ function saveGhosts() {
   for (var k in ghosts) {
     out += k + '|' + ghosts[k] + '\n';
   }
+  // storage.write appends unless told otherwise, so pass 'write' to replace the file.
+  var ok = false;
   try {
-    storage.write(GHOST_FILE, out, 'write');  // replace, don't append
+    ok = storage.write(GHOST_FILE, out, 'write');
   } catch (e) {
-    lastError = 'save failed';
+    ok = false;
   }
+  saveError = ok ? '' : 'save failed: check the SD card';
 }
 
 function isMarked(addr) {
@@ -286,8 +290,9 @@ function frame(title) {
 }
 
 function footer(text) {
-  display.setTextColor(lastError ? cFire : cTan);
-  display.drawString(lastError ? lastError : text, 6, SH - 11);
+  var msg = saveError || lastError;
+  display.setTextColor(msg ? cFire : cTan);
+  display.drawString(msg ? shorten(msg, 36) : text, 6, SH - 11);
 }
 
 function drawScanning(round) {
@@ -401,7 +406,7 @@ function pick() {
       toggleMine(list[cursor - 1]);
       list = pickList(found);
     }
-    var sig = cursor + '|' + lastError;
+    var sig = cursor + '|' + lastError + '|' + saveError;
     for (var i = 0; i < list.length; i++) sig += '|' + list[i].label + list[i].mine;
     if (sig !== lastSig) {
       drawPick(list, cursor);
@@ -420,7 +425,7 @@ function radar() {
     prune(devices, now());
     var list = radarList();
     var n = countsOf(list);
-    var sig = n.join(',') + '|' + lastError;
+    var sig = n.join(',') + '|' + lastError + '|' + saveError;
     for (var i = 0; i < list.length && i < LIST_ROWS; i++) {
       sig += '|' + list[i].label + Math.round(list[i].rssi / 3);
     }
