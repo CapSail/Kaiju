@@ -347,7 +347,7 @@ function heatBar(x, y, rssi, selected, ghost) {
   }
 }
 
-function draw(list, sum) {
+function draw(list, sum, scanning) {
   display.fill(cNight);
   display.setTextSize(1);
 
@@ -356,8 +356,8 @@ function draw(list, sum) {
   display.setTextColor(cGold);
   display.drawString("CLASSIFIED // PROXIMITY", 6, 5);
   display.drawFillRect(4, 15, 114, 1, cGold);
-  display.setTextColor(cDim);
-  display.drawString("B" + lastBle + " W" + lastWifi, 172, 5);
+  display.setTextColor(scanning ? cFire : cGold);
+  display.drawString(scanning ? "LIVE" : "HOLD", 180, 5);
 
   // one-line summary: how many close, near and far
   display.setTextColor(cGold);
@@ -378,7 +378,7 @@ function draw(list, sum) {
   // the target list: a heat bar per device, closest on top
   if (list.length === 0) {
     display.setTextColor(cTan);
-    display.drawString("nothing in range", 6, LIST_TOP);
+    display.drawString(scanning ? "nothing in range yet" : "paused: nothing listed", 6, LIST_TOP);
   }
   var top = 0;
   if (cursor >= LIST_ROWS) top = cursor - LIST_ROWS + 1;
@@ -414,7 +414,7 @@ function draw(list, sum) {
     display.drawString("M MARK  H SHOW  ESC QUIT", 6, SH - 11);
   }
   display.setTextColor(cDim);
-  display.drawString("k:" + lastKeyName, 188, SH - 11);
+  display.drawString("b" + lastBle + " w" + lastWifi + " k:" + lastKeyName, 150, SH - 11);
 }
 
 function readKey() {
@@ -427,6 +427,7 @@ function readKey() {
 }
 
 function handleInput(list) {
+  var acted = false;
   var key = readKey();
   var sel = keyboard.getSelPress();
   var selEdge = sel && !lastSel;
@@ -434,36 +435,67 @@ function handleInput(list) {
 
   if (key === ';' || key === ',') {
     if (cursor > 0) cursor--;
+    acted = true;
   } else if (key === '.' || key === '/') {
     if (cursor < list.length - 1) cursor++;
+    acted = true;
   } else if (key === 'm' || key === 'M' || selEdge) {
     if (list.length > 0) toggleMine(list[cursor]);
+    acted = true;
   } else if (key === 'h' || key === 'H') {
     showHidden = !showHidden;
     cursor = 0;
+    acted = true;
   }
+  return acted;
+}
+
+// Scanning pauses for a few seconds after each key, so the keys respond at once.
+var HOLD_MS = 3000;
+var lastInputAt = -100000;
+var lastSig = '';
+
+function signature(list, sum, level, scanning) {
+  var s = cursor + '|' + showHidden + '|' + level + '|' + scanning + '|' + lastBle + '|' + lastWifi;
+  s += '|' + lastKeyName + '|' + lastError + '|' + sum[0].n + sum[1].n + sum[2].n;
+  for (var i = 0; i < list.length && i < LIST_ROWS; i++) {
+    s += '|' + list[i].label + ':' + Math.round(list[i].rssi / 3) + (list[i].ghost ? 'g' : '');
+  }
+  return s;
 }
 
 function main() {
+  // one scan at start, so there's something to look at straight away
+  scanBle(now());
+  scanWifi(now());
   var list = buildList();
-  draw(list, bandSummary());
+  var sum = bandSummary();
+  draw(list, sum, true);
+  lastSig = signature(list, sum, levelOf(sum), true);
   while (true) {
     if (keyboard.getEscPress()) break;
-    handleInput(buildList());
 
-    var t = now();
-    scanBle(t);
-    if (cycle % WIFI_EVERY === 0) scanWifi(t);
-    cycle++;
-    if (lastError && lastError.indexOf('ble') === 0 && lastBle > 0) lastError = '';
+    var t0 = now();
+    if (handleInput(buildList())) lastInputAt = t0;
+    var scanning = now() - lastInputAt > HOLD_MS;
 
-    // keys pressed during the scan
-    handleInput(buildList());
+    if (scanning) {
+      scanBle(now());
+      if (cycle % WIFI_EVERY === 0) scanWifi(now());
+      cycle++;
+      if (lastError && lastError.indexOf('ble') === 0 && lastBle > 0) lastError = '';
+    }
 
     list = buildList();
     if (cursor >= list.length) cursor = Math.max(0, list.length - 1);
-    draw(list, bandSummary());
-    delay(40);
+    sum = bandSummary();
+    var level = levelOf(sum);
+    var sig = signature(list, sum, level, scanning);
+    if (sig !== lastSig) {
+      draw(list, sum, scanning);
+      lastSig = sig;
+    }
+    delay(30);
   }
 }
 
