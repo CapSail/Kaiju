@@ -31,6 +31,7 @@ var cDim = display.color(110, 84, 56);
 var INV_FILE = '/kaiju_inventory.txt';
 var STALE_MS = 20000;   // an item not seen for 20 seconds is no longer visible
 var HOLD_MS = 3000;     // after a key press, pause scanning for 3 seconds
+var SCAN_EVERY_MS = 4000;  // scan at most this often, so the keys stay responsive
 var LIST_TOP = 28;
 var ROW_H = 11;
 var LIST_ROWS = 6;
@@ -39,10 +40,12 @@ var inv = loadInv();    // id -> label, saved on the card
 var seen = {};          // id -> { kind, name, rssi, chan, enc, t }, what's visible now
 var view = 0;           // 0 = SCAN, 1 = INVENTORY
 var cursor = 0;
-var lastError = '';
+var lastError = '';   // from the last scan
+var saveError = '';  // from the last save
 var lastKey = '';
 var lastSel = false;
 var lastInputAt = -100000;
+var lastScanAt = -100000;
 var lastSig = '';
 
 // ---- ids and labels ------------------------------------------------------
@@ -100,16 +103,19 @@ function loadInv() {
   return map;
 }
 
+// storage.write appends unless told otherwise, so pass 'write' to replace the file.
 function saveInv() {
   var out = '# Lab inventory. Used only by Kaiju Inventory.\n';
   for (var k in inv) {
     out += k + '|' + inv[k] + '\n';
   }
+  var ok = false;
   try {
-    storage.write(INV_FILE, out);
+    ok = storage.write(INV_FILE, out, 'write');
   } catch (e) {
-    lastError = 'save failed';
+    ok = false;
   }
+  saveError = ok ? '' : 'save failed: check the SD card';
 }
 
 // ---- scanning (passive: Wi-Fi and Bluetooth listening only) ---------------
@@ -196,7 +202,8 @@ function labelItem(id) {
   var current = inv[id] !== undefined ? inv[id] : labelFor(id);
   var text = '';
   try {
-    text = keyboard.keyboard(current, 24, 'Label');
+    // Firmware order: title, max length, message. The field starts empty.
+    text = keyboard.keyboard('Label', 24, 'was: ' + shorten(current, 20));
   } catch (e) {
     lastError = 'no keyboard';
     return;
@@ -261,9 +268,10 @@ function draw(items) {
     display.drawString(detail, 6, 104);
   }
 
-  display.setTextColor(lastError ? cFire : cTan);
-  if (lastError) {
-    display.drawString(shorten(lastError, 36), 6, SH - 11);
+  var msg = saveError || lastError;
+  display.setTextColor(msg ? cFire : cTan);
+  if (msg) {
+    display.drawString(shorten(msg, 36), 6, SH - 11);
   } else if (view === 0) {
     display.drawString('SEL mark  L label  I inv  ESC', 6, SH - 11);
   } else {
@@ -292,7 +300,7 @@ function selEdge() {
 // ---- main loop -----------------------------------------------------------
 
 function signature(items) {
-  var s = view + '|' + cursor + '|' + lastError;
+  var s = view + '|' + cursor + '|' + lastError + '|' + saveError;
   for (var i = 0; i < items.length && i < LIST_ROWS; i++) {
     var id = items[i].id;
     s += '|' + id + labelFor(id) + (seen[id] ? Math.round(seen[id].rssi / 3) : 'x');
@@ -302,6 +310,7 @@ function signature(items) {
 
 function main() {
   scanOnce(now());
+  lastScanAt = now();
   var items = currentItems();
   while (true) {
     if (keyboard.getEscPress()) break;
@@ -330,8 +339,9 @@ function main() {
     }
 
     // scanning pauses for a few seconds after a key press, so keys respond at once
-    if (now() - lastInputAt > HOLD_MS) {
+    if (now() - lastInputAt > HOLD_MS && now() - lastScanAt >= SCAN_EVERY_MS) {
       scanOnce(now());
+      lastScanAt = now();
     }
 
     items = currentItems();

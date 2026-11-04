@@ -83,7 +83,7 @@ function saveGhosts() {
     out += k + '|' + ghosts[k] + '\n';
   }
   try {
-    storage.write(GHOST_FILE, out);
+    storage.write(GHOST_FILE, out, 'write');  // replace, don't append
   } catch (e) {
     lastError = 'save failed';
   }
