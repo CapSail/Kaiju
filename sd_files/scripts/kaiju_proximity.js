@@ -146,7 +146,7 @@ function scanInto(map, t, skipMarked) {
   try {
     found = ble.scan(SCAN_SECS);
   } catch (e) {
-    lastError = 'bluetooth error';
+    lastError = 'bt: ' + String(e).substring(0, 18);
     return;
   }
   lastError = '';
@@ -297,6 +297,7 @@ function drawScanning(round) {
   display.setTextColor(cTan);
   display.drawString('about 10 seconds', 6, 42);
   drawHead(2, 'scanning');
+  footer('ESC quit');
 }
 
 function drawPick(list, cursor) {
@@ -432,8 +433,34 @@ function radar() {
 }
 
 function main() {
-  if (!pick()) return;
-  radar();
+  try {
+    if (!pick()) return;
+    radar();
+  } catch (e) {
+    showError(String(e));
+  }
+}
+
+// If the script crashes, show the message and save it to the card so it can be read.
+function showError(msg) {
+  try {
+    storage.write('/kaiju_error.txt', msg + '\n');
+  } catch (e) {
+    // no card: the message still shows on screen
+  }
+  display.fill(cNight);
+  display.setTextSize(1);
+  display.setTextColor(cFire);
+  display.drawString('KAIJU PROXIMITY ERROR', 6, 20);
+  display.setTextColor(cCream);
+  display.drawString(shorten(msg, 36), 6, 36);
+  display.drawString(shorten(msg.substring(36), 36), 6, 46);
+  display.setTextColor(cTan);
+  display.drawString('saved to /kaiju_error.txt', 6, 66);
+  display.drawString('press Esc', 6, 76);
+  while (!keyboard.getEscPress()) {
+    delay(50);
+  }
 }
 
 main();
