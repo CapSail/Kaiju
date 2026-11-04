@@ -2,18 +2,24 @@ KAIJU EXTRAS
 Added to this build.
 
 Kaijugotchi (Wi-Fi menu)
-  Listens to nearby networks. It
-  deauths
-  only networks listed in
+  A pet that watches nearby networks.
+  Deauths only networks in
   /BrucePCAP/owned_aps.txt.
 Captures (Kaijugotchi)
-  Press Select on the Kaijugotchi
-  screen,
-  then Captures, to open handshakes.
+  Select on the Kaijugotchi screen,
+  then Captures to open handshakes.
 Kaiju Stomp (Apps)
-  Jump with ; or Select. Breathe fire
-  with /.
+  Run the city. Jump with ; or Select.
+  Breathe fire with /.
+Kaiju Shooter (Apps)
+  Fly and burn the saucers. Prev/Next
+  to move, Select to breathe fire.
+Kaiju Pong (Apps)
+  Bat the fireball past the rival.
+  Prev/Next to move, Select for menu.
 Kaiju Proximity (Apps)
   Counts nearby phones and Wi-Fi by
-  signal strength. Names are never
-  shown.
+  signal strength. Full MAC addresses
+  are never shown. M marks your own.
+Kaiju Learn (Apps)
+  This guide.

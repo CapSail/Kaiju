@@ -24,6 +24,7 @@ var TOPICS = [
   ['Infrared', 'infrared'],
   ['Files', 'files'],
   ['Apps', 'apps'],
+  ['Scripts', 'scripts'],
   ['Clock', 'clock'],
   ['Tools', 'tools'],
   ['Settings', 'settings'],
@@ -43,7 +44,7 @@ function drawIndex(sel) {
   display.setTextColor(cRust);
   display.drawString("LEARN", 8, 4);
   for (var i = 0; i < TOPICS.length; i++) {
-    var y = 18 + i * 9;
+    var y = 15 + i * 9;
     if (i === sel) {
       display.drawFillRect(4, y - 1, SW - 8, 9, cRust);
       display.setTextColor(cBg);
@@ -53,7 +54,7 @@ function drawIndex(sel) {
     display.drawString(TOPICS[i][0], 8, y);
   }
   display.setTextColor(cDark);
-  display.drawString("Select = open   Esc = quit", 8, SH - 12);
+  display.drawString("Select = open   Esc = quit", 8, SH - 10);
 }
 
 function loadLines(key) {

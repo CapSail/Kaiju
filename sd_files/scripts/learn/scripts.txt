@@ -1,0 +1,29 @@
+SCRIPTS FOLDERS
+Apps shows subfolders as [ name ].
+Open one to find its scripts.
+
+Use these only on your own networks
+and devices, or where you have written
+permission to test.
+
+[ wifi ]  wifi_brute
+  Tries a list of passwords on one
+  network. Load a text file, one
+  password per line. Each try waits
+  up to 3 seconds. Esc stops it.
+  Scan lists WPA2 and WEP networks
+  only, so WPA3 networks won't show.
+  The whole list loads into memory,
+  so start with a short list.
+
+[ rf ]  rf_brute
+  Sends 256 codes on 433.92 MHz,
+  one every 0.2 s, about a minute.
+  Only fixed-code remotes respond.
+  Rolling-code remotes ignore it.
+  Any key stops it.
+
+[ ir ]  ir_brute
+  Sends 65,536 NEC codes, one every
+  0.2 s, over 3.5 hours.
+  Any key stops it.

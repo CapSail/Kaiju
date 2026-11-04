@@ -4,17 +4,13 @@ Small programs stored on the SD card.
 Load...
   Pick an app and run it.
 
-Apps live in the /scripts folder on
-the
-SD card. To add one, copy its .js file
-there.
+Apps live in the /scripts folder. Copy
+a .js file there to add one. Folders
+show as [ name ]. Open one for more.
 
 Kaiju apps:
-  Kaiju Stomp: the city runner game.
-  Kaiju Proximity: counts nearby
-  signals.
-  Kaiju Learn: this guide.
+  Stomp, Shooter, Pong, Proximity,
+  and Learn. See Kaiju extras.
 
-Read each app's notes before you run
-it.
+Read each app's notes first.
 Some apps use the radios.
