@@ -64,29 +64,42 @@ while(true)
       continue;
     }
     var networks_choices = {};
+    var shown = 0;
     for (var i = 0; i < networks.length; i++) {
       var net = networks[i];
-      if (net.encryptionType == "WPA2_PSK" || net.encryptionType == "WEP") {
-        var label = net.SSID + " (" + net.RSSI + " dBm)" + "[" + net.MAC + "]";
+      // every password-protected network, so WPA2/WPA3 mixed ones are listed too
+      if (net.encryptionType != "OPEN" && net.encryptionType.indexOf("ENTERPRISE") < 0) {
+        var label = net.SSID + " (" + net.RSSI + " dBm) " + net.encryptionType + " [" + net.MAC + "]";
         networks_choices[label] = net.SSID;  // chave visível, valor retornado
+        shown++;
       }
+    }
+    if (shown == 0) {
+      dialogError("no password networks found");
+      continue;
     }
     network_to_attack_ssid = dialogChoice(networks_choices);
   }
   else if(choice=="load") {
     var passwords_file = dialog.pickFile("/");
     if(!passwords_file) continue;
-    var passwords_to_try = storage.read(passwords_file);  // MEMO: 4kb file limit -> use native open+read?
+    var passwords_to_try = "";
+    try {
+      passwords_to_try = storage.read(passwords_file);
+    } catch (e) {
+      dialogError("could not read that file");
+      continue;
+    }
     if(!passwords_to_try) continue;
     var raw_passwords = passwords_to_try.split("\n");
     passwords_to_try_arr = [];
     for (var i = 0; i < raw_passwords.length; i++) {
-      var pwd = raw_passwords[i];
-      pwd = pwd.replace(/\r/g, '').trim();
+      var pwd = raw_passwords[i].trim();  // trim also removes the \r from Windows line endings
       if (pwd) {
         passwords_to_try_arr.push(pwd);
       }
     }
+    dialogMessage("loaded " + passwords_to_try_arr.length + " passwords", true);
   }
   else if(choice=="attack") {
     if(!network_to_attack_ssid) {
