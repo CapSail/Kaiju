@@ -1,0 +1,24 @@
+SETTINGS
+Look, sound, and device options.
+
+UI Theme
+  Pick a look. Kaiju files live in
+  /themes on the SD card.
+UI Color
+  Pick a color preset.
+Brightness, Dim Time, Sleep
+  Screen settings.
+Sound Volume, Audio Config
+  Sound settings.
+Startup App
+  Choose what opens at power on.
+Hide/Show Apps
+  Hide menu items you don't use.
+Network Creds
+  Saved Wi-Fi logins.
+Factory Reset
+  Wipes settings. Careful.
+Restart, Power Off
+  Power options.
+About
+  Version info.

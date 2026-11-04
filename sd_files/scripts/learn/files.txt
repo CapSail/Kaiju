@@ -1,0 +1,22 @@
+FILES
+Browse, copy, and share files.
+
+SD Card
+  Files on the microSD card.
+LittleFS
+  Files in the built-in storage.
+Send File, Recv File
+  Copy files to or from a computer.
+Mass Storage
+  The card appears on your computer.
+WebUI
+  Manage files from a browser on the
+  same Wi-Fi.
+Send Cmds, Recv Cmds
+  Send or receive command files.
+Connect
+  Connect to another device.
+
+Captured handshakes are in
+/BrucePCAP/handshakes. The Kaijugotchi
+Captures option opens that folder.

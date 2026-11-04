@@ -1,0 +1,19 @@
+TOOLS
+Extra tools that work over USB or
+sound.
+
+QRCodes
+  Make a QR code from text.
+Megalodon
+  A Bruce tool. See its on-screen
+  notes.
+Microphone
+  Record sound or view its spectrum.
+BadUSB & HID
+  Run keyboard scripts over USB.
+USB Keyboard
+  Type text through the USB cable.
+USB Clicker
+  Act as a USB clicker.
+USB U2F
+  Act as a security key. Testing only.

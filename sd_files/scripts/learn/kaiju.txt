@@ -1,0 +1,19 @@
+KAIJU EXTRAS
+Added to this build.
+
+Kaijugotchi (Wi-Fi menu)
+  Listens to nearby networks. It
+  deauths
+  only networks listed in
+  /BrucePCAP/owned_aps.txt.
+Captures (Kaijugotchi)
+  Press Select on the Kaijugotchi
+  screen,
+  then Captures, to open handshakes.
+Kaiju Stomp (Apps)
+  Jump with ; or Select. Breathe fire
+  with /.
+Kaiju Proximity (Apps)
+  Counts nearby phones and Wi-Fi by
+  signal strength. Names are never
+  shown.
