@@ -13,7 +13,7 @@
 #include <vector>
 
 // ============================================================================
-// Pwnagotchi-style state machine for Brucegotchi
+// Pwnagotchi-style state machine for Kaijugotchi
 // ============================================================================
 // Phases mirror the real Pwnagotchi algorithm:
 //   RECON   → hop all channels to discover APs
@@ -64,6 +64,35 @@ static uint64_t bruceMacToKey(const void *mac) {
     uint64_t key = 0;
     for (int i = 0; i < 6; ++i) { key = (key << 8) | (uint64_t)u[i]; }
     return key;
+}
+
+// Networks you own, one MAC per line in /BrucePCAP/owned_aps.txt (e.g. A4:CF:12:34:56:78).
+// Only these get deauth frames. Every other network is listened to but never deauthed.
+static std::set<uint64_t> ownedAps;
+
+static void loadOwnedAps() {
+    ownedAps.clear();
+    FS *fs = isLittleFS ? static_cast<FS *>(&LittleFS) : static_cast<FS *>(&SD);
+    const char *path = "/BrucePCAP/owned_aps.txt";
+    if (!fs->exists(path)) {
+        Serial.println("Kaijugotchi: no owned_aps.txt, passive only");
+        return;
+    }
+    File f = fs->open(path, FILE_READ);
+    if (!f) return;
+    while (f.available()) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        if (line.length() != 17) continue;
+        unsigned int b[6];
+        if (sscanf(line.c_str(), "%02x:%02x:%02x:%02x:%02x:%02x",
+                   &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) != 6) continue;
+        uint8_t mac[6];
+        for (int i = 0; i < 6; ++i) mac[i] = (uint8_t)b[i];
+        ownedAps.insert(bruceMacToKey(mac));
+    }
+    f.close();
+    Serial.printf("Kaijugotchi: %d owned APs\n", (int)ownedAps.size());
 }
 
 // Count how many (non-stale) beacons are on a given channel
@@ -236,6 +265,12 @@ static void interactPhase(BruceState &s) {
 
                 uint64_t key = bruceMacToKey(beacon.MAC);
 
+                // deauth only networks listed in owned_aps.txt
+                if (ownedAps.find(key) == ownedAps.end()) {
+                    skipped++;
+                    continue;
+                }
+
                 if (sniffer_is_handshake_ready(key)) {
                     skipped++;
                     continue;
@@ -345,6 +380,7 @@ void brucegotchi_start() {
         sniffer_reset_handshake_cache();
     }
 
+    loadOwnedAps();
     brucegotchi_setup();
     drawTopCanvas();
     drawBottomCanvas();

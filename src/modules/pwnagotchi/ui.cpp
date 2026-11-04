@@ -9,6 +9,7 @@ Thanks to @bmorcelli for his help doing a better code.
 #if !defined(LITE_VERSION)
 #include "ui.h"
 #include "../wifi/sniffer.h"
+#include "kaiju_mascot.h"
 
 #define ROW_SIZE 40
 #define PADDING 10
@@ -149,7 +150,29 @@ void drawMood(const String &face, const String &phrase, bool broken) {
     // draw screen
     tft.drawPixel(0, 0, 0);
     tft.fillRect(0, canvas_top_h + 10, display_w, canvas_bot_h - 40, bruceConfig.bgColor);
-    tft.drawCentreString(face, canvas_center_x, canvas_h / 3, SMOOTH_FONT);
+
+    // Kaiju mascot on the left, mood face on the right
+    const int mascotX = 8;
+    const int mascotY = canvas_top_h + 12;
+    tft.drawXBitmap(
+        mascotX,
+        mascotY,
+        KAIJU_MASCOT_BITS,
+        KAIJU_MASCOT_W,
+        KAIJU_MASCOT_H,
+        bruceConfig.priColor,
+        bruceConfig.bgColor
+    );
+    // eye color follows the mood: calm, sad or bored, angry
+    uint8_t moodId = getCurrentMoodId();
+    uint16_t eyeColor = bruceConfig.priColor;
+    if (moodId == 16 || moodId == 17) eyeColor = bruceConfig.secColor;
+    else if (moodId >= 21) eyeColor = TFT_RED;
+    tft.fillCircle(mascotX + KAIJU_EYE_X, mascotY + KAIJU_EYE_Y, KAIJU_EYE_R, eyeColor);
+
+    int faceX = (mascotX + KAIJU_MASCOT_W + display_w) / 2;
+    tft.drawCentreString(face, faceX, mascotY + KAIJU_MASCOT_H / 2, SMOOTH_FONT);
+
     // prepare canvas
     tft.setTextDatum(BC_DATUM);
     tft.setTextSize(1);
