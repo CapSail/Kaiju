@@ -151,7 +151,7 @@ function scanInto(map, t, skipMarked) {
     found = ble.scan(SCAN_SECS);
   } catch (e) {
     lastError = 'bt: ' + String(e).substring(0, 18);
-    return;
+    return -1;
   }
   lastError = '';
   lastBle = found.length;
@@ -162,6 +162,7 @@ function scanInto(map, t, skipMarked) {
     if (name === '<unknown>') name = '';
     remember(map, addr, found[i].rssi, t, name);
   }
+  return found.length;
 }
 
 // Everything found in the pick scan, strongest first.
@@ -295,12 +296,15 @@ function footer(text) {
   display.drawString(msg ? shorten(msg, 36) : text, 6, SH - 11);
 }
 
-function drawScanning(round) {
+// n: -2 = scan running, -1 = the scan failed, otherwise devices found
+function drawScanning(round, n, ms) {
   frame('CLASSIFIED // PROXIMITY');
   display.setTextColor(cFire);
   display.drawString('scanning ' + round + ' of ' + PICK_ROUNDS, 6, 30);
   display.setTextColor(cTan);
-  display.drawString('about 10 seconds', 6, 42);
+  if (n === -2) display.drawString('scanning...', 6, 42);
+  else if (n < 0) display.drawString('scan failed', 6, 42);
+  else display.drawString('last: ' + n + ' found in ' + ms + ' ms', 6, 42);
   drawHead(2, 'scanning');
   footer('ESC quit');
 }
@@ -362,7 +366,7 @@ function drawRadar(list, n) {
   drawHead(lvl);
   display.setTextColor(cFire);
   display.drawString(briefing(lvl), 128, 113);
-  footer('hold ESC to quit');
+  footer('last scan: ' + lastBle + ' seen, ESC quits');
 }
 
 // Reads one key press per press, not on every loop it's held.
@@ -385,8 +389,10 @@ function selEdge() {
 function pick() {
   var found = {};
   for (var round = 1; round <= PICK_ROUNDS; round++) {
-    drawScanning(round);
-    scanInto(found, now(), false);
+    drawScanning(round, -2, 0);
+    var t0 = now();
+    var n = scanInto(found, now(), false);
+    drawScanning(round, n, now() - t0);
     if (keyboard.getEscPress()) return false;
   }
   var list = pickList(found);

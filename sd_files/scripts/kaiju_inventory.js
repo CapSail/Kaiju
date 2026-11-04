@@ -133,8 +133,8 @@ function scanOnce(t) {
       if (n === '<unknown>') n = '';
       remember(makeId('bt', bt[i].address), 'BT', n, bt[i].rssi, 0, '', t);
     }
-  } catch (e) {
-    lastError = 'bt: ' + String(e).substring(0, 18);
+  } catch (bleErr) {
+    lastError = 'bt: ' + String(bleErr).substring(0, 18);
   }
   try {
     var aps = wifi.scan();
@@ -145,8 +145,8 @@ function scanOnce(t) {
         aps[j].channel, String(aps[j].encryptionType), t
       );
     }
-  } catch (e) {
-    lastError = 'wifi: ' + String(e).substring(0, 16);
+  } catch (wifiErr) {
+    lastError = 'wifi: ' + String(wifiErr).substring(0, 16);
   }
   for (var k in seen) {
     if (t - seen[k].t > STALE_MS) delete seen[k];
