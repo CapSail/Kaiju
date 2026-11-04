@@ -1,18 +1,24 @@
-// Kaiju Proximity
-// Counts the phones (Bluetooth) and Wi-Fi networks around you, sorted into
-// close, near and far by signal strength. Signal strength is a rough guide,
-// not a distance. Walls and bodies change it a lot.
+// Kaiju Proximity: a spy gadget, with Kaiju as the host.
+// Shows the phones (Bluetooth) and Wi-Fi networks around you: how many are
+// close, near and far, and roughly how far away each one is.
+// Distances are a rough guide from signal strength. Walls and bodies change
+// them a lot, so read them as "about this far", not a measurement.
 //
-//   Select  = mark mine: open the list and tick your own devices (hidden
-//             from the counts). Marked devices are saved to
-//             /scripts/ghosts.txt on the SD card when you press Esc.
-//   Esc     = quit (or save and close the mark list)
+// Keys:
+//   ; , . /   move the cursor up and down
+//   m or Select  mark the highlighted target as yours (it leaves the list and
+//                the counts). Marks are saved to /scripts/ghosts.txt
+//   h         show or hide the targets you've marked
+//   Esc       quit
+//
+// The top right shows scan counts and the last key read. If something goes
+// wrong with a scan, the error shows at the bottom.
 //
 // Privacy: devices are kept in memory only, except the ones you mark as
-// yours. Names are shown only in the mark list, so you can tell which are
-// yours. Addresses are never drawn in full.
-// Note: many phones change their Bluetooth address from time to time, so a
-// marked phone can reappear. Mark it again if that happens.
+// yours. Names show on screen so you can tell what's around you. Full
+// addresses never appear. Many phones change their Bluetooth address from
+// time to time, so a marked phone can reappear as a new entry. Mark it again
+// if that happens.
 
 var display = require('display');
 var keyboard = require('keyboard');
@@ -23,30 +29,49 @@ var storage = require('storage');
 var SW = display.width();
 var SH = display.height();
 
-// 70s palette
-var cBg = display.color(210, 180, 140);
-var cDark = display.color(40, 22, 10);
-var cBrown = display.color(74, 44, 23);
-var cMustard = display.color(217, 162, 27);
-var cRust = display.color(181, 83, 42);
+// spy-dossier palette, with the 70s warmth kept in the Kaiju colors
+var cNight = display.color(40, 22, 10);
+var cGold = display.color(217, 162, 27);
+var cFire = display.color(230, 120, 30);
+var cHead = display.color(181, 83, 42);
+var cTan = display.color(210, 180, 140);
+var cCream = display.color(245, 230, 200);
+var cDim = display.color(110, 84, 56);
+var cHot = display.color(240, 70, 30);
+var cBar = display.color(70, 46, 26);
 
 var CLOSE_DBM = -55;    // at or above this: close
 var NEAR_DBM = -70;     // at or above this (and below close): near, else far
-var STALE_MS = 20000;   // forget a device or network not seen for 20 seconds
+var STALE_MS = 20000;   // forget a target not seen for 20 seconds
 var BLE_SECS = 1;       // Bluetooth scan length
 var WIFI_EVERY = 3;     // Wi-Fi scan every 3rd cycle, it's slower
 var GHOST_FILE = '/scripts/ghosts.txt';
-var MARK_ROWS = 8;      // rows on the mark list
+var LIST_TOP = 56;      // first row of the target list
+var ROW_H = 9;
+var LIST_ROWS = 7;
 
-// Memory only: counted devices and networks (marked ones are never counted).
-var devices = {};       // address -> { rssi, seen }
-var nets = {};          // BSSID -> { rssi, seen }
-// Memory only: everything seen, for the mark list.
-var seenBle = {};       // address -> { rssi, seen, name }
-var seenNet = {};       // BSSID -> { rssi, seen, name }
+// Kaiju's head, host of the show. Each run is [x, y, width] in a 96x88 box.
+var HEAD_X = 130;
+var HEAD_Y = 14;
+var HEAD_RUNS = [17,5,2,17,6,3,18,7,4,18,8,6,19,9,6,20,10,7,20,11,9,21,12,9,21,13,11,22,14,12,7,15,3,22,15,13,8,16,4,23,16,16,9,17,6,23,17,22,10,18,7,24,18,25,11,19,9,25,19,27,12,20,10,25,20,30,13,21,45,13,22,48,14,23,50,15,24,51,16,25,53,3,26,1,17,26,54,4,27,5,18,27,56,5,28,9,19,28,57,6,29,73,8,30,73,9,31,74,10,32,74,11,33,75,13,34,75,14,35,75,15,36,75,16,37,75,15,38,76,7,39,84,3,40,88,5,41,85,8,42,82,10,43,79,12,44,77,15,45,72,16,46,68,17,47,64,17,48,61,17,49,58,17,50,56,17,51,54,17,52,52,18,53,49,18,54,47,18,55,45,18,56,43,19,57,41,20,58,38,21,59,36,22,60,33,23,61,31,24,62,28,25,63,26,28,64,21,33,65,12,37,66,5];
+
+// Memory only: counted targets (marked ones are never counted).
+var devices = {};       // address -> { rssi, seen, name }
+var nets = {};          // BSSID -> { rssi, seen, name }
+// Memory only: everything seen, for the list.
+var seenBle = {};
+var seenNet = {};
 
 var ghosts = loadGhosts();  // address -> label, from the SD card
+var showHidden = false;
+var cursor = 0;
 var cycle = 0;
+var lastBle = 0;
+var lastWifi = 0;
+var lastError = '';
+var lastKeyName = '';
+var lastKey = '';
+var lastSel = false;
 
 function loadGhosts() {
   var map = {};
@@ -74,13 +99,31 @@ function saveGhosts() {
   for (var k in ghosts) {
     out += k + '|' + ghosts[k] + '\n';
   }
-  storage.write(GHOST_FILE, out);
+  try {
+    storage.write(GHOST_FILE, out);
+  } catch (e) {
+    lastError = 'save failed';
+  }
 }
 
 function bucket(rssi) {
   if (rssi >= CLOSE_DBM) return 0;
   if (rssi >= NEAR_DBM) return 1;
   return 2;
+}
+
+// Rough distance in metres from signal strength. Only a guide.
+function metres(rssi) {
+  return Math.pow(10, (-59 - rssi) / 25);
+}
+
+function rounded(m) {
+  if (m < 10) return Math.round(m * 10) / 10;
+  return Math.round(m);
+}
+
+function fmtM(rssi) {
+  return '~' + rounded(metres(rssi)) + 'm';
 }
 
 function remember(map, key, rssi, t, name) {
@@ -101,14 +144,15 @@ function prune(map, t) {
   }
 }
 
-function countBuckets(map) {
-  var c = [0, 0, 0];
-  for (var k in map) c[bucket(map[k].rssi)]++;
-  return c;
-}
-
 function scanBle(t) {
-  var found = ble.scan(BLE_SECS);
+  var found = [];
+  try {
+    found = ble.scan(BLE_SECS);
+  } catch (e) {
+    lastError = 'ble: ' + String(e).substring(0, 14);
+    return;
+  }
+  lastBle = found.length;
   for (var i = 0; i < found.length; i++) {
     var addr = String(found[i].address).toLowerCase();
     var name = String(found[i].name || '');
@@ -121,7 +165,14 @@ function scanBle(t) {
 }
 
 function scanWifi(t) {
-  var list = wifi.scan();
+  var list = [];
+  try {
+    list = wifi.scan();
+  } catch (e) {
+    lastError = 'wifi: ' + String(e).substring(0, 13);
+    return;
+  }
+  lastWifi = list.length;
   for (var i = 0; i < list.length; i++) {
     var mac = String(list[i].MAC).toLowerCase();
     var ssid = String(list[i].SSID || '');
@@ -132,65 +183,35 @@ function scanWifi(t) {
   prune(nets, t);
 }
 
-function bar(x, y, n, color) {
-  var w = Math.min(n, 10) * 6;
-  if (w > 0) display.drawFillRect(x, y, w, 8, color);
-}
-
-// A small Kaiju silhouette, the same shape as the game's. Awake eye when awake.
-function drawKaiju(x, y, awake) {
-  display.drawFillRect(x, y + 6, 26, 12, cDark);
-  display.drawFillRect(x + 22, y, 12, 9, cDark);
-  display.drawFillRect(x - 6, y + 10, 8, 4, cDark);
-  display.drawFillRect(x + 4, y + 2, 3, 4, cDark);
-  display.drawFillRect(x + 12, y + 2, 3, 4, cDark);
-  display.drawFillRect(x + 4, y + 18, 5, 4, cDark);
-  display.drawFillRect(x + 16, y + 18, 5, 4, cDark);
-  if (awake) {
-    display.drawFillRect(x + 28, y + 2, 2, 2, cMustard);
-  } else {
-    display.drawFillRect(x + 27, y + 3, 4, 1, cMustard);
+// Counts and the distance range for each band, over the targets that aren't marked.
+function bandSummary() {
+  var out = [
+    { n: 0, lo: 0, hi: 0 },
+    { n: 0, lo: 0, hi: 0 },
+    { n: 0, lo: 0, hi: 0 }
+  ];
+  var maps = [devices, nets];
+  for (var mi = 0; mi < maps.length; mi++) {
+    for (var k in maps[mi]) {
+      var r = maps[mi][k].rssi;
+      var b = bucket(r);
+      var d = metres(r);
+      var s = out[b];
+      if (s.n === 0) {
+        s.lo = d;
+        s.hi = d;
+      } else {
+        if (d < s.lo) s.lo = d;
+        if (d > s.hi) s.hi = d;
+      }
+      s.n++;
+    }
   }
+  return out;
 }
 
-function drawColumn(x, title, c) {
-  display.setTextColor(cDark);
-  display.drawString(title, x, 24);
-  display.setTextColor(cRust);
-  display.drawString("close", x, 40);
-  bar(x + 40, 42, c[0], cRust);
-  display.setTextColor(cDark);
-  display.drawString("near", x, 56);
-  bar(x + 40, 58, c[1], cMustard);
-  display.drawString("far", x, 72);
-  bar(x + 40, 74, c[2], cBrown);
-}
-
-function drawScreen(bleC, wifiC) {
-  display.fill(cBg);
-  display.setTextSize(1);
-  display.setTextColor(cDark);
-  display.drawString("PROXIMITY", 8, 6);
-  drawColumn(8, "Phones", bleC);
-  drawColumn(124, "Wi-Fi", wifiC);
-
-  var nearby = bleC[0] + bleC[1] + wifiC[0] + wifiC[1];
-  drawKaiju(SW - 60, SH - 30, nearby > 0);
-  display.setTextColor(cDark);
-  display.drawString(nearby > 0 ? "something is close" : "all quiet", 8, SH - 14);
-  display.drawString("Select = mark mine", 8, SH - 26);
-}
-
-function shorten(s, n) {
-  return s.length > n ? s.substring(0, n) : s;
-}
-
-function tail(addr) {
-  return addr.substring(addr.length - 5);
-}
-
-// Mark list: every device and network seen, strongest first.
-function buildMarkList() {
+// The list: every target seen, strongest first.
+function buildList() {
   var items = [];
   for (var a in seenBle) {
     items.push({ addr: a, kind: 'BT', name: seenBle[a].name, rssi: seenBle[a].rssi });
@@ -199,97 +220,250 @@ function buildMarkList() {
     items.push({ addr: m, kind: 'AP', name: seenNet[m].name, rssi: seenNet[m].rssi });
   }
   items.sort(function (x, y) { return y.rssi - x.rssi; });
+  var out = [];
   for (var i = 0; i < items.length; i++) {
     var it = items[i];
     it.ghost = ghosts[it.addr] !== undefined;
-    it.label = it.name ? it.name : it.kind + ' ' + tail(it.addr);
+    if (it.ghost && !showHidden) continue;
+    it.label = it.name ? it.name : it.kind + ' ' + it.addr.substring(it.addr.length - 5);
+    out.push(it);
   }
-  return items;
+  return out;
 }
 
-function toggleGhost(it) {
+function toggleMine(it) {
   if (ghosts[it.addr] !== undefined) {
     delete ghosts[it.addr];
   } else {
     ghosts[it.addr] = it.label;
-    // drop it from the counts right away
     delete devices[it.addr];
     delete nets[it.addr];
-  }
-  it.ghost = ghosts[it.addr] !== undefined;
-}
-
-function drawMarkList(items, sel, top) {
-  display.fill(cBg);
-  display.setTextSize(1);
-  display.setTextColor(cRust);
-  display.drawString("MARK MINE", 8, 4);
-  display.setTextColor(cDark);
-  if (items.length === 0) {
-    display.drawString("Nothing seen yet. Scan first.", 8, 30);
-  }
-  for (var i = 0; i < MARK_ROWS && top + i < items.length; i++) {
-    var it = items[top + i];
-    var y = 18 + i * 12;
-    if (top + i === sel) {
-      display.drawFillRect(4, y - 2, SW - 8, 11, cRust);
-      display.setTextColor(cBg);
-    } else {
-      display.setTextColor(cDark);
-    }
-    var mark = it.ghost ? "[x] " : "[ ] ";
-    display.drawString(mark + shorten(it.label, 16) + "  " + it.rssi, 8, y);
-  }
-  display.setTextColor(cDark);
-  display.drawString("Select=tick  Esc=save", 8, SH - 12);
-}
-
-function firstKey() {
-  var k = keyboard.getKeysPressed();
-  return k.length > 0 ? k[0] : '';
-}
-
-function markScreen() {
-  var items = buildMarkList();
-  var sel = 0;
-  var top = 0;
-  drawMarkList(items, sel, top);
-  while (true) {
-    if (keyboard.getEscPress()) break;
-    if (keyboard.getSelPress() && items.length > 0) {
-      toggleGhost(items[sel]);
-      drawMarkList(items, sel, top);
-    }
-    var key = firstKey();
-    if ((key === ';' || key === ',') && sel > 0) {
-      sel--;
-      if (sel < top) top = sel;
-      drawMarkList(items, sel, top);
-    } else if ((key === '.' || key === '/') && sel < items.length - 1) {
-      sel++;
-      if (sel >= top + MARK_ROWS) top = sel - MARK_ROWS + 1;
-      drawMarkList(items, sel, top);
-    }
-    delay(100);
   }
   saveGhosts();
 }
 
+function shorten(s, n) {
+  return s.length > n ? s.substring(0, n) : s;
+}
+
+// signal -95..-30 maps to a bar of 0..20 pixels
+function barLen(rssi) {
+  var v = Math.round((rssi + 95) * 20 / 65);
+  if (v < 1) v = 1;
+  if (v > 20) v = 20;
+  return v;
+}
+
+// 0 = something close, 1 = something near, 2 = only far things, -1 = nothing
+function levelOf(sum) {
+  if (sum[0].n > 0) return 0;
+  if (sum[1].n > 0) return 1;
+  if (sum[2].n > 0) return 2;
+  return -1;
+}
+
+// The head, with an expression that follows the nearest target. Brows and
+// the mouth are cut out in the night color so they show on the head.
+function drawHead(level) {
+  var hx = HEAD_X;
+  var hy = HEAD_Y;
+  for (var i = 0; i < HEAD_RUNS.length; i += 3) {
+    display.drawFillRect(hx + HEAD_RUNS[i], hy + HEAD_RUNS[i + 1], HEAD_RUNS[i + 2], 1, cHead);
+  }
+  var label = 'asleep';
+  if (level === 0) {
+    // close: wide gold eyes, angry brows, mouth open with teeth and fire
+    label = 'ROAR!';
+    display.drawFillRect(hx + 46, hy + 26, 8, 7, cGold);
+    display.drawFillRect(hx + 56, hy + 24, 8, 7, cGold);
+    display.drawFillRect(hx + 49, hy + 28, 2, 4, cNight);
+    display.drawFillRect(hx + 59, hy + 26, 2, 4, cNight);
+    display.drawFillRect(hx + 44, hy + 20, 12, 2, cNight);
+    display.drawFillRect(hx + 56, hy + 22, 12, 2, cNight);
+    display.drawFillRect(hx + 60, hy + 45, 28, 9, cNight);
+    display.drawFillRect(hx + 64, hy + 45, 2, 3, cGold);
+    display.drawFillRect(hx + 72, hy + 45, 2, 3, cGold);
+    display.drawFillRect(hx + 80, hy + 45, 2, 3, cGold);
+    display.drawFillRect(hx + 88, hy + 42, 20, 6, cFire);
+    display.drawFillRect(hx + 92, hy + 43, 12, 3, cGold);
+  } else if (level === 1) {
+    // near: open eyes, flat brows, mouth open a little
+    label = 'alert';
+    display.drawFillRect(hx + 48, hy + 27, 7, 6, cGold);
+    display.drawFillRect(hx + 57, hy + 27, 7, 6, cGold);
+    display.drawFillRect(hx + 50, hy + 29, 2, 3, cNight);
+    display.drawFillRect(hx + 59, hy + 29, 2, 3, cNight);
+    display.drawFillRect(hx + 46, hy + 23, 10, 2, cNight);
+    display.drawFillRect(hx + 58, hy + 23, 10, 2, cNight);
+    display.drawFillRect(hx + 62, hy + 48, 24, 3, cNight);
+  } else if (level === 2) {
+    // far: calm, half-open eyes, mouth closed
+    label = 'calm';
+    display.drawFillRect(hx + 48, hy + 29, 7, 3, cGold);
+    display.drawFillRect(hx + 57, hy + 29, 7, 3, cGold);
+    display.drawFillRect(hx + 62, hy + 49, 24, 2, cNight);
+  } else {
+    // nothing around: eyes shut, mouth closed
+    display.drawFillRect(hx + 48, hy + 30, 7, 2, cNight);
+    display.drawFillRect(hx + 57, hy + 30, 7, 2, cNight);
+    display.drawFillRect(hx + 62, hy + 49, 24, 2, cNight);
+  }
+  display.setTextSize(1);
+  display.setTextColor(cGold);
+  display.drawString(label, hx + 14, hy + 90);
+}
+
+function briefing(level) {
+  if (level === 0) return 'THREAT: HIGH';
+  if (level === 1) return 'THREAT: MED';
+  if (level === 2) return 'THREAT: LOW';
+  return 'ALL CLEAR';
+}
+
+function bandLine(name, s) {
+  if (s.n === 0) return name + ' 0';
+  return name + ' ' + s.n + '  ' + rounded(s.lo) + '-' + rounded(s.hi) + 'm';
+}
+
+// A heat bar: 12 segments, lit from the left up to how close the signal is.
+// The first segments are gold (far end), then orange, then red (close end).
+function heatBar(x, y, rssi, selected, ghost) {
+  var lit = Math.round((rssi + 95) * 12 / 65);
+  if (lit < 1) lit = 1;
+  if (lit > 12) lit = 12;
+  for (var s = 0; s < 12; s++) {
+    var on = s < lit;
+    var col;
+    if (selected) {
+      col = on ? cNight : cTan;
+    } else if (ghost) {
+      col = on ? cDim : cBar;
+    } else if (!on) {
+      col = cBar;
+    } else {
+      col = s < 5 ? cGold : s < 9 ? cFire : cHot;
+    }
+    display.drawFillRect(x + s * 5, y, 4, 6, col);
+  }
+}
+
+function draw(list, sum) {
+  display.fill(cNight);
+  display.setTextSize(1);
+
+  // monitor frame and title
+  display.drawRect(1, 1, SW - 2, SH - 2, cDim);
+  display.setTextColor(cGold);
+  display.drawString("CLASSIFIED // PROXIMITY", 6, 5);
+  display.drawFillRect(4, 15, 114, 1, cGold);
+  display.setTextColor(cDim);
+  display.drawString("B" + lastBle + " W" + lastWifi, 172, 5);
+
+  // one-line summary: how many close, near and far
+  display.setTextColor(cGold);
+  display.drawString("close " + sum[0].n + "  near " + sum[1].n, 6, 18);
+  display.setTextColor(cTan);
+  display.drawString("far " + sum[2].n, 6, 27);
+
+  // nearest target, as the lock
+  display.setTextColor(cCream);
+  if (list.length > 0 && !list[0].ghost) {
+    display.drawString("LOCK " + shorten(list[0].label, 9) + " " + fmtM(list[0].rssi), 6, 36);
+  } else {
+    display.drawString("LOCK none", 6, 36);
+  }
+  display.setTextColor(cDim);
+  display.drawString("TARGETS", 6, 45);
+
+  // the target list: a heat bar per device, closest on top
+  if (list.length === 0) {
+    display.setTextColor(cTan);
+    display.drawString("nothing in range", 6, LIST_TOP);
+  }
+  var top = 0;
+  if (cursor >= LIST_ROWS) top = cursor - LIST_ROWS + 1;
+  for (var i = 0; i < LIST_ROWS && top + i < list.length; i++) {
+    var idx = top + i;
+    var it = list[idx];
+    var y = LIST_TOP + i * ROW_H;
+    var b = bucket(it.rssi);
+    var rowColor = b === 0 ? cFire : b === 1 ? cGold : cTan;
+    if (it.ghost) rowColor = cDim;
+    if (idx === cursor) {
+      display.drawFillRect(3, y - 1, 121, ROW_H, cGold);
+      display.setTextColor(cNight);
+    } else {
+      display.setTextColor(rowColor);
+    }
+    var prefix = it.ghost ? "x " : "";
+    display.drawString(prefix + shorten(it.label, 8), 6, y);
+    heatBar(62, y + 1, it.rssi, idx === cursor, it.ghost);
+  }
+
+  // Kaiju the host: head, expression, briefing
+  drawHead(levelOf(sum));
+  display.setTextColor(cFire);
+  display.drawString(briefing(levelOf(sum)), 128, 113);
+
+  // footer
+  display.setTextColor(cTan);
+  if (lastError) {
+    display.setTextColor(cFire);
+    display.drawString(shorten(lastError, 26), 6, SH - 11);
+  } else {
+    display.drawString("M MARK  H SHOW  ESC QUIT", 6, SH - 11);
+  }
+  display.setTextColor(cDim);
+  display.drawString("k:" + lastKeyName, 188, SH - 11);
+}
+
+function readKey() {
+  var k = keyboard.getKeysPressed();
+  var key = k.length > 0 ? k[0] : '';
+  var edge = key !== '' && key !== lastKey;
+  lastKey = key;
+  if (edge) lastKeyName = key;
+  return edge ? key : '';
+}
+
+function handleInput(list) {
+  var key = readKey();
+  var sel = keyboard.getSelPress();
+  var selEdge = sel && !lastSel;
+  lastSel = sel;
+
+  if (key === ';' || key === ',') {
+    if (cursor > 0) cursor--;
+  } else if (key === '.' || key === '/') {
+    if (cursor < list.length - 1) cursor++;
+  } else if (key === 'm' || key === 'M' || selEdge) {
+    if (list.length > 0) toggleMine(list[cursor]);
+  } else if (key === 'h' || key === 'H') {
+    showHidden = !showHidden;
+    cursor = 0;
+  }
+}
+
 function main() {
-  drawScreen([0, 0, 0], [0, 0, 0]);
+  var list = buildList();
+  draw(list, bandSummary());
   while (true) {
     if (keyboard.getEscPress()) break;
-    if (keyboard.getSelPress()) {
-      markScreen();
-      drawScreen(countBuckets(devices), countBuckets(nets));
-      continue;
-    }
+    handleInput(buildList());
+
     var t = now();
     scanBle(t);
     if (cycle % WIFI_EVERY === 0) scanWifi(t);
     cycle++;
-    drawScreen(countBuckets(devices), countBuckets(nets));
-    delay(300);
+    if (lastError && lastError.indexOf('ble') === 0 && lastBle > 0) lastError = '';
+
+    // keys pressed during the scan
+    handleInput(buildList());
+
+    list = buildList();
+    if (cursor >= list.length) cursor = Math.max(0, list.length - 1);
+    draw(list, bandSummary());
+    delay(40);
   }
 }
 
